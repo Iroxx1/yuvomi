@@ -161,6 +161,139 @@ function validateItemFields(body, { partial = false, current = null } = {}) {
 }
 
 // --------------------------------------------------------
+// GET /api/v1/pantry/barcode/:barcode
+// Produktdaten anhand einer EAN/GTIN aus Open Food Facts laden.
+// Der Barcode wird vorerst NICHT in Yuvomis Datenbank gespeichert.
+// --------------------------------------------------------
+router.get('/barcode/:barcode', async (req, res) => {
+  const barcode = String(req.params.barcode ?? '').trim();
+
+  // Unterstützt EAN-8 bis GTIN-14.
+  if (!/^\d{8,14}$/.test(barcode)) {
+    return res.status(400).json({
+      error: 'Ungültiger Barcode.',
+      code: 400,
+    });
+  }
+
+  try {
+    const url = new URL(
+      `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json`
+    );
+
+    url.searchParams.set(
+      'fields',
+      [
+        'code',
+        'product_name',
+        'product_name_de',
+        'brands',
+        'quantity',
+        'product_quantity',
+        'product_quantity_unit',
+        'image_front_small_url',
+      ].join(',')
+    );
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent':
+          process.env.OPENFOODFACTS_USER_AGENT ||
+          'YuvomiBarcodeExtension/1.0 (self-hosted)',
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+
+    if (!response.ok) {
+      log.warn(
+        `Open Food Facts HTTP ${response.status} for barcode ${barcode}`
+      );
+
+      return res.status(502).json({
+        error: 'Produktdatenbank ist momentan nicht erreichbar.',
+        code: 502,
+      });
+    }
+
+    const result = await response.json();
+
+    if (Number(result.status) !== 1 || !result.product) {
+      return res.status(404).json({
+        error: 'Produkt wurde nicht gefunden.',
+        code: 404,
+      });
+    }
+
+    const product = result.product;
+
+    const name = String(
+      product.product_name_de ||
+      product.product_name ||
+      product.brands ||
+      `Barcode ${barcode}`
+    ).trim();
+
+    const rawQuantity = Number(product.product_quantity);
+
+    const rawUnit = String(
+      product.product_quantity_unit ?? ''
+    )
+      .trim()
+      .toLowerCase();
+
+    /*
+     * Open Food Facts kennt wesentlich mehr Einheiten als Yuvomi.
+     * Gewicht und Volumen können wir direkt übernehmen.
+     * Alles andere wird zunächst als 1 Stück behandelt.
+     */
+    const supportedProductUnits = new Set([
+      'g',
+      'kg',
+      'ml',
+      'l',
+    ]);
+
+    let quantity = 1;
+    let unit = 'pcs';
+
+    if (
+      Number.isFinite(rawQuantity) &&
+      rawQuantity > 0 &&
+      supportedProductUnits.has(rawUnit)
+    ) {
+      quantity = normalizePantryQuantity(
+        rawQuantity,
+        { fallback: 1 }
+      );
+
+      unit = normalizePantryUnit(rawUnit);
+    }
+
+    return res.json({
+      data: {
+        barcode,
+        name,
+        quantity,
+        unit,
+        brand: product.brands || null,
+        package_text: product.quantity || null,
+        image_url: product.image_front_small_url || null,
+      },
+    });
+  } catch (err) {
+    log.error(
+      `GET /barcode/${barcode} error:`,
+      err
+    );
+
+    return res.status(502).json({
+      error: 'Produktdaten konnten nicht abgerufen werden.',
+      code: 502,
+    });
+  }
+});
+
+// --------------------------------------------------------
 // GET /api/v1/pantry/locations
 // Alle Lagerorte in Sortierreihenfolge.
 // Response: { data: PantryLocation[] }

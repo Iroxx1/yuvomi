@@ -106,6 +106,10 @@ function withIntent(item) {
   return intent ? { ...item, quantity: intent.quantity } : item;
 }
 
+/** Kamera-Stream des Barcode-Scanners. */
+let _pantryBarcodeStream = null;
+let _pantryBarcodeActive = false;
+
 // --------------------------------------------------------
 // Formatierung
 // --------------------------------------------------------
@@ -1121,6 +1125,70 @@ function openItemModal(mode, item = null) {
     title: isEdit ? t('common.editItem') : t('pantry.addItem'),
     size: 'md',
     content: `
+      ${!isEdit ? `
+      <div class="form-group">
+        <label class="form-label" for="pantry-barcode">
+          Barcode / EAN
+        </label>
+
+        <input
+          id="pantry-barcode"
+          class="form-input"
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          placeholder="z. B. 3017624010701"
+        >
+
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
+          <button
+            type="button"
+            class="btn btn--secondary"
+            id="pantry-barcode-lookup"
+          >
+            <i data-lucide="search" class="icon-sm" aria-hidden="true"></i>
+            Suchen
+          </button>
+
+          <button
+            type="button"
+            class="btn btn--secondary"
+            id="pantry-barcode-scan"
+          >
+            <i data-lucide="scan-line" class="icon-sm" aria-hidden="true"></i>
+            Barcode scannen
+          </button>
+        </div>
+
+        <video
+          id="pantry-barcode-video"
+          autoplay
+          playsinline
+          muted
+          hidden
+          style="width:100%;max-height:320px;object-fit:cover;border-radius:12px;margin-top:.75rem;background:#000"
+        ></video>
+
+        <button
+          type="button"
+          class="btn btn--secondary"
+          id="pantry-barcode-stop"
+          hidden
+          style="margin-top:.5rem"
+        >
+          Scanner schließen
+        </button>
+
+        <p
+          id="pantry-barcode-status"
+          class="form-hint"
+          aria-live="polite"
+        >
+          Barcode scannen oder Nummer manuell eingeben.
+        </p>
+      </div>
+      ` : ''}
+
       <div class="form-group">
         <label class="form-label" for="pantry-name">${esc(t('common.nameLabel'))}</label>
         <input id="pantry-name" class="form-input" type="text" required
@@ -1180,6 +1248,34 @@ function openItemModal(mode, item = null) {
       panel.querySelector('#pantry-min').value = isEdit && item.min_quantity != null ? String(item.min_quantity) : '';
       panel.querySelector('#pantry-notes').value = isEdit && item.notes ? item.notes : '';
 
+      const barcodeInput = panel.querySelector('#pantry-barcode');
+
+      panel.querySelector('#pantry-barcode-lookup')?.addEventListener('click', async () => {
+        const barcode = barcodeInput?.value.trim();
+        if (!barcode) return;
+
+        await lookupPantryBarcode(panel, barcode);
+      });
+
+      barcodeInput?.addEventListener('keydown', async (event) => {
+        if (event.key !== 'Enter') return;
+
+        event.preventDefault();
+
+        const barcode = barcodeInput.value.trim();
+        if (!barcode) return;
+
+        await lookupPantryBarcode(panel, barcode);
+      });
+
+      panel.querySelector('#pantry-barcode-scan')?.addEventListener('click', async () => {
+        await startPantryBarcodeScanner(panel);
+      });
+
+      panel.querySelector('#pantry-barcode-stop')?.addEventListener('click', () => {
+        stopPantryBarcodeScanner(panel);
+      });
+
       panel.querySelector('#pantry-save').addEventListener('click', () => saveItem(panel, mode, item));
       panel.querySelector('#pantry-delete')?.addEventListener('click', async () => {
         closeSharedModal({ force: true });
@@ -1192,6 +1288,328 @@ function openItemModal(mode, item = null) {
     },
   });
 }
+
+
+/**
+ * Barcode über den lokalen Yuvomi-Endpunkt nachschlagen
+ * und das vorhandene Vorratsformular vorausfüllen.
+ */
+async function lookupPantryBarcode(panel, barcode) {
+  const input = panel.querySelector('#pantry-barcode');
+  const status = panel.querySelector('#pantry-barcode-status');
+  const lookupBtn = panel.querySelector('#pantry-barcode-lookup');
+
+  const cleanBarcode = String(barcode ?? '').trim();
+
+  if (!/^\d{8,14}$/.test(cleanBarcode)) {
+    if (status) {
+      status.textContent =
+        'Bitte einen gültigen Barcode mit 8 bis 14 Ziffern eingeben.';
+    }
+    return;
+  }
+
+  if (input) input.value = cleanBarcode;
+  if (lookupBtn) lookupBtn.disabled = true;
+
+  if (status) {
+    status.textContent = 'Produkt wird gesucht …';
+  }
+
+  try {
+    const res = await api.get(
+      `/pantry/barcode/${encodeURIComponent(cleanBarcode)}`
+    );
+
+    const product = res.data;
+
+    if (!product) {
+      throw new Error('Keine Produktdaten erhalten.');
+    }
+
+    const nameInput =
+      panel.querySelector('#pantry-name');
+
+    const quantityInput =
+      panel.querySelector('#pantry-quantity');
+
+    const unitInput =
+      panel.querySelector('#pantry-unit');
+
+    if (nameInput) {
+      nameInput.value = product.name || '';
+    }
+
+    if (quantityInput) {
+      quantityInput.value =
+        String(product.quantity ?? 1);
+    }
+
+    if (unitInput) {
+      unitInput.value =
+        product.unit || 'pcs';
+    }
+
+    const details = [
+      product.name,
+      product.brand,
+      product.package_text,
+    ].filter(Boolean);
+
+    if (status) {
+      status.textContent =
+        `Gefunden: ${details.join(' · ')}`;
+    }
+
+    window.yuvomi?.showToast(
+      'Produkt gefunden.',
+      'success'
+    );
+  } catch (err) {
+    if (status) {
+      status.textContent =
+        'Produkt nicht gefunden. Du kannst die Angaben manuell eintragen.';
+    }
+
+    window.yuvomi?.showToast(
+      err.data?.error ?? 'Produkt wurde nicht gefunden.',
+      'info'
+    );
+  } finally {
+    if (lookupBtn) {
+      lookupBtn.disabled = false;
+    }
+  }
+}
+
+
+/**
+ * Rückkamera öffnen und EAN-/UPC-Code erkennen.
+ */
+async function startPantryBarcodeScanner(panel) {
+  const video =
+    panel.querySelector('#pantry-barcode-video');
+
+  const scanBtn =
+    panel.querySelector('#pantry-barcode-scan');
+
+  const stopBtn =
+    panel.querySelector('#pantry-barcode-stop');
+
+  const status =
+    panel.querySelector('#pantry-barcode-status');
+
+  stopPantryBarcodeScanner(panel);
+
+  /*
+   * Kamerazugriff ist außerhalb von localhost normalerweise
+   * nur über HTTPS erlaubt.
+   */
+  if (!window.isSecureContext) {
+    if (status) {
+      status.textContent =
+        'Kamera-Scan benötigt HTTPS. Die Barcode-Nummer kann weiterhin manuell eingegeben werden.';
+    }
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    if (status) {
+      status.textContent =
+        'Dieser Browser erlaubt hier keinen Kamerazugriff.';
+    }
+    return;
+  }
+
+  if (!('BarcodeDetector' in globalThis)) {
+    if (status) {
+      status.textContent =
+        'Dieser Browser unterstützt die automatische Barcode-Erkennung nicht. Bitte Barcode manuell eingeben.';
+    }
+    return;
+  }
+
+  try {
+    const supported =
+      await globalThis.BarcodeDetector.getSupportedFormats();
+
+    const formats = [
+      'ean_13',
+      'ean_8',
+      'upc_a',
+      'upc_e',
+    ].filter(
+      (format) => supported.includes(format)
+    );
+
+    if (!formats.length) {
+      if (status) {
+        status.textContent =
+          'Dieser Browser unterstützt keine EAN-/UPC-Barcodes.';
+      }
+      return;
+    }
+
+    const detector =
+      new globalThis.BarcodeDetector({
+        formats,
+      });
+
+    const stream =
+      await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: {
+            ideal: 'environment',
+          },
+          width: {
+            ideal: 1280,
+          },
+          height: {
+            ideal: 720,
+          },
+        },
+        audio: false,
+      });
+
+    _pantryBarcodeStream = stream;
+    _pantryBarcodeActive = true;
+
+    video.srcObject = stream;
+    video.hidden = false;
+
+    if (scanBtn) scanBtn.hidden = true;
+    if (stopBtn) stopBtn.hidden = false;
+
+    await video.play();
+
+    if (status) {
+      status.textContent =
+        'Barcode vor die Kamera halten …';
+    }
+
+    while (_pantryBarcodeActive) {
+      /*
+       * Modal inzwischen geschlossen:
+       * Kamera automatisch abschalten.
+       */
+      if (!video.isConnected) {
+        stopPantryBarcodeScanner(panel);
+        break;
+      }
+
+      try {
+        if (video.readyState >= 2) {
+          const codes =
+            await detector.detect(video);
+
+          const result = codes.find(
+            (entry) =>
+              /^\d{8,14}$/.test(entry.rawValue)
+          );
+
+          if (result) {
+            const barcode =
+              result.rawValue;
+
+            const input =
+              panel.querySelector('#pantry-barcode');
+
+            if (input) {
+              input.value = barcode;
+            }
+
+            vibrate(30);
+
+            stopPantryBarcodeScanner(panel);
+
+            await lookupPantryBarcode(
+              panel,
+              barcode
+            );
+
+            break;
+          }
+        }
+      } catch {
+        /*
+         * Ein einzelner Kamera-Frame darf
+         * fehlschlagen.
+         */
+      }
+
+      await new Promise(
+        (resolve) =>
+          setTimeout(resolve, 150)
+      );
+    }
+  } catch (err) {
+    console.error(
+      'Pantry barcode scanner:',
+      err
+    );
+
+    stopPantryBarcodeScanner(panel);
+
+    if (status) {
+      if (err?.name === 'NotAllowedError') {
+        status.textContent =
+          'Kamerazugriff wurde nicht erlaubt.';
+      } else {
+        status.textContent =
+          'Kamera konnte nicht geöffnet werden.';
+      }
+    }
+  }
+}
+
+
+/**
+ * Kamera und Scan-Schleife vollständig stoppen.
+ */
+function stopPantryBarcodeScanner(panel = null) {
+  _pantryBarcodeActive = false;
+
+  if (_pantryBarcodeStream) {
+    for (
+      const track
+      of _pantryBarcodeStream.getTracks()
+    ) {
+      track.stop();
+    }
+  }
+
+  _pantryBarcodeStream = null;
+
+  const video =
+    panel?.querySelector(
+      '#pantry-barcode-video'
+    );
+
+  if (video) {
+    video.pause();
+    video.srcObject = null;
+    video.hidden = true;
+  }
+
+  const scanBtn =
+    panel?.querySelector(
+      '#pantry-barcode-scan'
+    );
+
+  const stopBtn =
+    panel?.querySelector(
+      '#pantry-barcode-stop'
+    );
+
+  if (scanBtn) {
+    scanBtn.hidden = false;
+  }
+
+  if (stopBtn) {
+    stopBtn.hidden = true;
+  }
+}
+
 
 async function saveItem(panel, mode, item) {
   const saveBtn = panel.querySelector('#pantry-save');
