@@ -58,6 +58,10 @@ const state = {
   lists: null,
   query: '',
   filter: 'all',
+
+  // Separater Lagerort-Filter.
+  // Kann mit Suche und Statusfilter kombiniert werden.
+  locationFilter: 'all',
   /** Einmal pro Render eingefroren: sonst könnte ein über Mitternacht offener
    *  Tab Zeilen unterschiedlich bewerten, je nachdem wann sie gezeichnet wurden. */
   todayKey: todayKey(),
@@ -224,6 +228,20 @@ function visibleItems() {
   // „Fast leer", waehrend die Zeile ihn noch dort zeigt.
   return state.items.map(withIntent).filter((item) => {
     if (!matchesPantryFilter(item, state.filter, state.todayKey)) return false;
+
+    if (state.locationFilter !== 'all') {
+      if (state.locationFilter === 'none') {
+        if (item.location_id != null) return false;
+      } else {
+        if (
+          String(item.location_id) !==
+          String(state.locationFilter)
+        ) {
+          return false;
+        }
+      }
+    }
+
     if (!q) return true;
     return item.name?.toLowerCase().includes(q)
       || item.notes?.toLowerCase().includes(q)
@@ -238,7 +256,10 @@ function visibleItems() {
  * die Meta-Zeile und geht dabei nicht verloren.
  */
 function groupedItems(items) {
-  if (state.filter !== 'all') {
+  if (
+    state.filter !== 'all' ||
+    state.locationFilter !== 'all'
+  ) {
     const flat = [...items];
     if (state.filter === 'expired' || state.filter === 'soon') {
       flat.sort((a, b) => String(a.expires_on).localeCompare(String(b.expires_on)));
@@ -350,6 +371,21 @@ export async function render(container) {
   filters.setAttribute('aria-label', t('common.filters'));
   filters.hidden = true;
 
+  const locationFilters =
+    document.createElement('div');
+
+  // Lokale Erweiterung (seit 2.75 wie die Statuschips eine Chipreihe IM
+  // Scrollport, direkt davor; drawList() behaelt beide Reihen).
+  locationFilters.className =
+    'page-chip-row pantry-filters pantry-location-filters';
+
+  locationFilters.id =
+    'pantry-location-filters';
+
+  locationFilters.setAttribute('role', 'group');
+  locationFilters.setAttribute('aria-label', 'Lagerorte');
+  locationFilters.hidden = true;
+
   // Hier stand der Slot für die Sammelaktions-Leiste. Sie ist seit Etappe 5
   // eine Pille in der unteren Shell-Zone (utils/bulk-pill.js) und braucht in
   // dieser Seite gar keinen Platz mehr - weder im Scroller, wo sie bis
@@ -359,7 +395,7 @@ export async function render(container) {
   list.className = 'list-scroller page-scrollport pantry-list';
   list.id = 'pantry-list';
   list.setAttribute('aria-busy', 'true');
-  list.append(filters);
+  list.append(locationFilters, filters);
   list.insertAdjacentHTML('beforeend', renderSkeletonList({ rows: 6, lines: 2 }));
 
   const fab = document.createElement('button');
@@ -414,10 +450,30 @@ export async function render(container) {
   filters.addEventListener('click', (e) => {
     const chip = e.target.closest('[data-filter]');
     if (!chip) return;
+
     state.filter = chip.dataset.filter;
+
     renderFilters();
     renderList();
   });
+
+  locationFilters.addEventListener(
+    'click',
+    (e) => {
+      const chip =
+        e.target.closest(
+          '[data-location-filter]'
+        );
+
+      if (!chip) return;
+
+      state.locationFilter =
+        chip.dataset.locationFilter;
+
+      renderLocationFilters();
+      renderList();
+    }
+  );
 
   list.addEventListener('click', onListClick);
   watch.addEventListener('click', onWatchClick);
@@ -462,6 +518,176 @@ function renderLoadError(list, err) {
  * Leiste wieder weg und schob den „Alle"-Ausgang aus dem Bild (Critique P1).
  */
 let _scrolledFilter = null;
+let _scrolledLocationFilter = null;
+
+/**
+ * Direkte Lagerort-Auswahl.
+ *
+ * Nur Lagerorte mit mindestens einem Artikel werden angezeigt.
+ * Dadurch entstehen keine Buttons, die garantiert in einer leeren
+ * Vorratsliste enden.
+ *
+ * Laeuft seit 2.75 bei jedem renderFilters() mit (Zaehler bleiben aktuell);
+ * gescrollt wird wie bei den Statuschips nur beim echten Wechsel, sonst
+ * zoege jeder ±-Tap die Liste zur Chipreihe hoch.
+ */
+function renderLocationFilters() {
+  const bar =
+    _container?.querySelector(
+      '#pantry-location-filters'
+    );
+
+  if (!bar) return;
+
+  if (!bar.dataset.fadeWired) {
+    bar.dataset.fadeWired = 'true';
+    wireScrollFade(bar);
+  }
+
+  const counts =
+    new Map();
+
+  let unlocatedCount = 0;
+
+  for (const item of state.items) {
+    if (item.location_id == null) {
+      unlocatedCount += 1;
+      continue;
+    }
+
+    const key =
+      String(item.location_id);
+
+    counts.set(
+      key,
+      (counts.get(key) || 0) + 1
+    );
+  }
+
+  const locations =
+    state.locations.filter(
+      (location) =>
+        (counts.get(String(location.id)) || 0) > 0
+    );
+
+  /*
+   * Aktiver Lagerort wurde gelöscht oder enthält
+   * inzwischen keinen Artikel mehr → zurück auf Alle Orte.
+   */
+  if (
+    state.locationFilter !== 'all' &&
+    state.locationFilter !== 'none' &&
+    !locations.some(
+      (location) =>
+        String(location.id) ===
+        String(state.locationFilter)
+    )
+  ) {
+    state.locationFilter = 'all';
+  }
+
+  if (
+    state.locationFilter === 'none' &&
+    unlocatedCount === 0
+  ) {
+    state.locationFilter = 'all';
+  }
+
+  bar.replaceChildren();
+
+  if (!state.items.length) {
+    bar.hidden = true;
+    return;
+  }
+
+  bar.hidden = false;
+
+  const chips = [
+    {
+      id: 'all',
+      label: 'Alle Orte',
+      icon: 'map-pin',
+      count: state.items.length,
+    },
+  ];
+
+  for (const location of locations) {
+    chips.push({
+      id: String(location.id),
+      label: locationLabel(location.name),
+      icon: location.icon || 'archive',
+      count:
+        counts.get(
+          String(location.id)
+        ) || 0,
+    });
+  }
+
+  if (unlocatedCount > 0) {
+    chips.push({
+      id: 'none',
+      label: t('pantry.unlocated'),
+      icon: 'package',
+      count: unlocatedCount,
+    });
+  }
+
+  bar.insertAdjacentHTML(
+    'beforeend',
+    chips.map(
+      (chip) => `
+        <button
+          type="button"
+          class="filter-chip${
+            String(chip.id) ===
+            String(state.locationFilter)
+              ? ' filter-chip--active'
+              : ''
+          }"
+          data-location-filter="${esc(chip.id)}"
+          aria-pressed="${
+            String(chip.id) ===
+            String(state.locationFilter)
+          }"
+          title="${esc(chip.label)}"
+        >
+          <i
+            data-lucide="${esc(chip.icon)}"
+            class="icon-sm"
+            aria-hidden="true"
+          ></i>
+
+          <span>
+            ${esc(chip.label)}
+          </span>
+
+          <span class="filter-chip__count">
+            ${chip.count}
+          </span>
+        </button>
+      `
+    ).join('')
+  );
+
+  if (window.lucide) {
+    window.lucide.createIcons({
+      el: bar,
+    });
+  }
+
+  const activeChip =
+    bar.querySelector(
+      '.filter-chip--active'
+    );
+
+  if (_scrolledLocationFilter !== state.locationFilter) {
+    activeChip?.scrollIntoView({
+      inline: 'nearest',
+      block: 'nearest',
+    });
+    _scrolledLocationFilter = state.locationFilter;
+  }
+}
 
 /**
  * @returns {{ wasReset: boolean }} `wasReset` ist true, wenn der aktive Filter
@@ -470,8 +696,14 @@ let _scrolledFilter = null;
  * „Alle" und die Liste weiter die alte gefilterte Teilmenge.
  */
 function renderFilters() {
+  // Lokale Erweiterung: Lagerort-Chips mitziehen; faellt ihr Filter auf
+  // „Alle Orte" zurueck, gilt das ebenfalls als Reset.
+  const previousLocationFilter = state.locationFilter;
+  renderLocationFilters();
+  const locationReset = state.locationFilter !== previousLocationFilter;
+
   const bar = _container?.querySelector('#pantry-filters');
-  if (!bar) return { wasReset: false };
+  if (!bar) return { wasReset: locationReset };
 
   // Kanten-Anriss der Chip-Leiste. Sie scrollt horizontal (gemessen 135px
   // Überhang bei 393px, 208px bei 320px), blendet ihre Scrollbar per CSS aus
@@ -492,7 +724,7 @@ function renderFilters() {
   // Der aktive Filter hat gerade seinen letzten Treffer verloren → zurück auf Alle.
   const previousFilter = state.filter;
   if (state.filter !== 'all' && !active.includes(state.filter)) state.filter = 'all';
-  const wasReset = state.filter !== previousFilter;
+  const wasReset = state.filter !== previousFilter || locationReset;
 
   // replaceChildren zerstört den fokussierten Chip; ohne Rettung landet der
   // Tastatur-Fokus auf <body> und der Tab-Weg beginnt wieder ganz oben.
@@ -634,9 +866,10 @@ function renderList({ motion = false } = {}) {
 
 function drawList(list) {
   list.removeAttribute('aria-busy');
-  // Die Chipreihe ist das erste Kind des Ports und ueberlebt den Neuaufbau.
-  const chipRow = list.querySelector(':scope > #pantry-filters');
-  list.replaceChildren(...(chipRow ? [chipRow] : []));
+  // Die Chipreihen (lokal: Lagerorte, dann Status) sind die ersten Kinder des
+  // Ports und ueberleben den Neuaufbau.
+  const chipRows = list.querySelectorAll(':scope > #pantry-location-filters, :scope > #pantry-filters');
+  list.replaceChildren(...chipRows);
   renderBulkBar();
   renderWatch();
 
@@ -649,7 +882,7 @@ function drawList(list) {
   const items = visibleItems();
   // Filtern und Suchen ändern die Liste, ohne dass sich der Fokus bewegt -
   // ohne Ansage bleibt die neue Trefferzahl für Screenreader unsichtbar.
-  if (state.filter !== 'all' || state.query) {
+  if (state.filter !== 'all' || state.locationFilter !== 'all' || state.query) {
     announce(t('pantry.resultCount', { count: items.length }));
   }
 
@@ -819,6 +1052,7 @@ function noResultsEl() {
       onClick: () => {
         state.query = '';
         state.filter = 'all';
+        state.locationFilter = 'all';
         // clear() versteckt zugleich den Leeren-Knopf des geteilten Suchfelds;
         // ein blankes `value = ''` ließe ihn über dem leeren Feld stehen.
         _search?.clear();
