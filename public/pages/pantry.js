@@ -1194,6 +1194,130 @@ function openItemModal(mode, item = null) {
         <input id="pantry-name" class="form-input" type="text" required
                placeholder="${esc(t('pantry.namePlaceholder'))}">
       </div>
+
+      <div class="form-group">
+        <label class="form-label">Foto</label>
+
+        <div
+          id="pantry-photo-preview-wrap"
+          style="
+            position:relative;
+            width:100%;
+            min-height:150px;
+            max-height:320px;
+            border:1px solid var(--border-color, #d1d5db);
+            border-radius:12px;
+            overflow:hidden;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            background:var(--surface-subtle, rgba(127,127,127,.08));
+          "
+        >
+          <img
+            id="pantry-photo-preview"
+            alt="Produktfoto"
+            hidden
+            style="
+              width:100%;
+              max-height:320px;
+              object-fit:contain;
+              display:block;
+            "
+          >
+
+          <div
+            id="pantry-photo-placeholder"
+            style="
+              padding:2rem 1rem;
+              text-align:center;
+              opacity:.65;
+            "
+          >
+            <i
+              data-lucide="image"
+              style="width:34px;height:34px"
+              aria-hidden="true"
+            ></i>
+            <div style="margin-top:.5rem">
+              Kein Foto
+            </div>
+          </div>
+        </div>
+
+        <input
+          id="pantry-photo-camera-input"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          hidden
+        >
+
+        <input
+          id="pantry-photo-gallery-input"
+          type="file"
+          accept="image/*"
+          hidden
+        >
+
+        <div
+          style="
+            display:flex;
+            gap:.5rem;
+            flex-wrap:wrap;
+            margin-top:.65rem;
+          "
+        >
+          <button
+            type="button"
+            class="btn btn--secondary"
+            id="pantry-photo-camera"
+          >
+            <i
+              data-lucide="camera"
+              class="icon-sm"
+              aria-hidden="true"
+            ></i>
+            Foto aufnehmen
+          </button>
+
+          <button
+            type="button"
+            class="btn btn--secondary"
+            id="pantry-photo-gallery"
+          >
+            <i
+              data-lucide="images"
+              class="icon-sm"
+              aria-hidden="true"
+            ></i>
+            Galerie
+          </button>
+
+          <button
+            type="button"
+            class="btn btn--danger-ghost"
+            id="pantry-photo-remove"
+            hidden
+          >
+            <i
+              data-lucide="trash-2"
+              class="icon-sm"
+              aria-hidden="true"
+            ></i>
+            Foto entfernen
+          </button>
+        </div>
+
+        <p
+          id="pantry-photo-status"
+          class="form-hint"
+          aria-live="polite"
+        >
+          Optional. Das Foto wird vor dem Upload verkleinert.
+        </p>
+      </div>
+
       <div class="pantry-form-row">
         <div class="form-group">
           <label class="form-label" for="pantry-quantity">${esc(t('pantry.quantityLabel'))}</label>
@@ -1248,6 +1372,96 @@ function openItemModal(mode, item = null) {
       panel.querySelector('#pantry-min').value = isEdit && item.min_quantity != null ? String(item.min_quantity) : '';
       panel.querySelector('#pantry-notes').value = isEdit && item.notes ? item.notes : '';
 
+      panel._pantryPhotoData = null;
+      panel._pantryPhotoRemove = false;
+
+      const photoPreview =
+        panel.querySelector('#pantry-photo-preview');
+
+      const photoPlaceholder =
+        panel.querySelector('#pantry-photo-placeholder');
+
+      const photoRemoveBtn =
+        panel.querySelector('#pantry-photo-remove');
+
+      const cameraInput =
+        panel.querySelector('#pantry-photo-camera-input');
+
+      const galleryInput =
+        panel.querySelector('#pantry-photo-gallery-input');
+
+      if (
+        isEdit &&
+        item.photo_key &&
+        photoPreview
+      ) {
+        photoPreview.src =
+          `/api/v1/pantry/photo/${item.id}` +
+          `?v=${encodeURIComponent(item.photo_key)}`;
+
+        photoPreview.hidden = false;
+        photoPreview.style.display = 'block';
+
+        if (photoPlaceholder) {
+          photoPlaceholder.hidden = true;
+        }
+
+        if (photoRemoveBtn) {
+          photoRemoveBtn.hidden = false;
+        }
+      }
+
+      panel.querySelector('#pantry-photo-camera')
+        ?.addEventListener('click', () => {
+          cameraInput?.click();
+        });
+
+      panel.querySelector('#pantry-photo-gallery')
+        ?.addEventListener('click', () => {
+          galleryInput?.click();
+        });
+
+      cameraInput?.addEventListener(
+        'change',
+        async () => {
+          const file =
+            cameraInput.files?.[0];
+
+          if (file) {
+            await handlePantryPhotoFile(
+              panel,
+              file
+            );
+          }
+
+          cameraInput.value = '';
+        }
+      );
+
+      galleryInput?.addEventListener(
+        'change',
+        async () => {
+          const file =
+            galleryInput.files?.[0];
+
+          if (file) {
+            await handlePantryPhotoFile(
+              panel,
+              file
+            );
+          }
+
+          galleryInput.value = '';
+        }
+      );
+
+      photoRemoveBtn?.addEventListener(
+        'click',
+        () => {
+          clearPantryPhoto(panel);
+        }
+      );
+
       const barcodeInput = panel.querySelector('#pantry-barcode');
 
       panel.querySelector('#pantry-barcode-lookup')?.addEventListener('click', async () => {
@@ -1287,6 +1501,410 @@ function openItemModal(mode, item = null) {
       if (window.lucide) window.lucide.createIcons({ el: panel });
     },
   });
+}
+
+
+
+/**
+ * Handyfoto vor dem Upload verkleinern.
+ *
+ * Maximal 1600 Pixel an der längsten Kante und JPEG 82 %.
+ * Das spart auf typischen Smartphone-Fotos deutlich Speicher und Traffic.
+ */
+/**
+ * Bilddatei ohne blob:-URL dekodieren.
+ *
+ * createImageBitmap arbeitet direkt auf dem File/Blob und kollidiert
+ * deshalb nicht mit Yuvomis Content-Security-Policy.
+ * FileReader + data:-URL dient als Browser-Fallback.
+ */
+async function decodePantryPhoto(file) {
+  if ('createImageBitmap' in globalThis) {
+    try {
+      return await createImageBitmap(
+        file,
+        {
+          imageOrientation: 'from-image',
+        }
+      );
+    } catch {
+      try {
+        return await createImageBitmap(
+          file
+        );
+      } catch {
+        // Weiter mit FileReader-Fallback.
+      }
+    }
+  }
+
+  const dataUrl =
+    await new Promise(
+      (resolve, reject) => {
+        const reader =
+          new FileReader();
+
+        reader.onload = () =>
+          resolve(reader.result);
+
+        reader.onerror = () =>
+          reject(
+            new Error(
+              'Die Bilddatei konnte nicht gelesen werden.'
+            )
+          );
+
+        reader.readAsDataURL(
+          file
+        );
+      }
+    );
+
+  return await new Promise(
+    (resolve, reject) => {
+      const img =
+        new Image();
+
+      img.onload = () =>
+        resolve(img);
+
+      img.onerror = () =>
+        reject(
+          new Error(
+            'Das Bildformat konnte vom Browser nicht dekodiert werden.'
+          )
+        );
+
+      img.src = dataUrl;
+    }
+  );
+}
+
+
+/**
+ * Handyfoto vor dem Upload verkleinern.
+ *
+ * Maximal 1600 Pixel an der längsten Kante und JPEG 82 %.
+ */
+async function compressPantryPhoto(file) {
+  if (!file) {
+    throw new Error(
+      'Keine Bilddatei ausgewählt.'
+    );
+  }
+
+  if (
+    !String(file.type || '')
+      .startsWith('image/')
+  ) {
+    throw new Error(
+      'Bitte eine Bilddatei auswählen.'
+    );
+  }
+
+  let image;
+
+  try {
+    image =
+      await decodePantryPhoto(
+        file
+      );
+  } catch (err) {
+    const type =
+      file.type ||
+      'unbekannter Typ';
+
+    const name =
+      file.name ||
+      'unbekannte Datei';
+
+    const isHeic =
+      /heic|heif/i.test(type) ||
+      /\.(heic|heif)$/i.test(name);
+
+    if (isHeic) {
+      throw new Error(
+        'Das Foto ist im HEIC/HEIF-Format. Dieser Browser kann dieses Format derzeit nicht verarbeiten.'
+      );
+    }
+
+    console.error(
+      'Pantry photo decode:',
+      {
+        name,
+        type,
+        size: file.size,
+        error: err,
+      }
+    );
+
+    throw new Error(
+      `Das Foto konnte nicht gelesen werden (${type}).`
+    );
+  }
+
+  try {
+    const sourceWidth =
+      image.width ||
+      image.naturalWidth;
+
+    const sourceHeight =
+      image.height ||
+      image.naturalHeight;
+
+    if (
+      !sourceWidth ||
+      !sourceHeight
+    ) {
+      throw new Error(
+        'Das Bild hat ungültige Abmessungen.'
+      );
+    }
+
+    const maxSide = 1600;
+
+    const scale =
+      Math.min(
+        1,
+        maxSide /
+          Math.max(
+            sourceWidth,
+            sourceHeight
+          )
+      );
+
+    const width =
+      Math.max(
+        1,
+        Math.round(
+          sourceWidth * scale
+        )
+      );
+
+    const height =
+      Math.max(
+        1,
+        Math.round(
+          sourceHeight * scale
+        )
+      );
+
+    const canvas =
+      document.createElement(
+        'canvas'
+      );
+
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx =
+      canvas.getContext(
+        '2d'
+      );
+
+    if (!ctx) {
+      throw new Error(
+        'Bildverarbeitung ist in diesem Browser nicht verfügbar.'
+      );
+    }
+
+    ctx.fillStyle =
+      '#ffffff';
+
+    ctx.fillRect(
+      0,
+      0,
+      width,
+      height
+    );
+
+    ctx.drawImage(
+      image,
+      0,
+      0,
+      width,
+      height
+    );
+
+    const result =
+      canvas.toDataURL(
+        'image/jpeg',
+        0.82
+      );
+
+    if (
+      !result ||
+      result === 'data:,'
+    ) {
+      throw new Error(
+        'Das Foto konnte nicht als JPEG erzeugt werden.'
+      );
+    }
+
+    return result;
+  } finally {
+    if (
+      typeof image?.close ===
+      'function'
+    ) {
+      image.close();
+    }
+  }
+}
+
+
+/**
+ * Ausgewähltes/aufgenommenes Bild verarbeiten
+ * und direkt im Formular anzeigen.
+ */
+async function handlePantryPhotoFile(
+  panel,
+  file
+) {
+  const status =
+    panel.querySelector(
+      '#pantry-photo-status'
+    );
+
+  const preview =
+    panel.querySelector(
+      '#pantry-photo-preview'
+    );
+
+  const placeholder =
+    panel.querySelector(
+      '#pantry-photo-placeholder'
+    );
+
+  const removeBtn =
+    panel.querySelector(
+      '#pantry-photo-remove'
+    );
+
+  if (status) {
+    status.textContent =
+      'Foto wird vorbereitet …';
+  }
+
+  try {
+    const dataUrl =
+      await compressPantryPhoto(
+        file
+      );
+
+    panel._pantryPhotoData =
+      dataUrl;
+
+    panel._pantryPhotoRemove =
+      false;
+
+    if (preview) {
+      preview.src = dataUrl;
+      preview.hidden = false;
+      preview.style.display = 'block';
+    }
+
+    if (placeholder) {
+      placeholder.hidden = true;
+    }
+
+    if (removeBtn) {
+      removeBtn.hidden = false;
+    }
+
+    /*
+     * Ungefähre Größe des dekodierten JPEG.
+     * Für den Nutzer informativer als die Base64-Länge.
+     */
+    const base64 =
+      dataUrl.split(',')[1] || '';
+
+    const approxBytes =
+      Math.round(
+        base64.length * 0.75
+      );
+
+    const approxKb =
+      Math.max(
+        1,
+        Math.round(
+          approxBytes / 1024
+        )
+      );
+
+    if (status) {
+      status.textContent =
+        `Foto bereit · ca. ${approxKb} KB`;
+    }
+  } catch (err) {
+    console.error(
+      'Pantry photo:',
+      err
+    );
+
+    if (status) {
+      status.textContent =
+        err?.message ||
+        'Foto konnte nicht verarbeitet werden.';
+    }
+
+    window.yuvomi?.showToast(
+      err?.message ||
+        'Foto konnte nicht verarbeitet werden.',
+      'danger'
+    );
+  }
+}
+
+
+/**
+ * Foto im Formular entfernen.
+ *
+ * Beim Bearbeiten wird die vorhandene Datei erst
+ * nach erfolgreichem Speichern serverseitig gelöscht.
+ */
+function clearPantryPhoto(panel) {
+  panel._pantryPhotoData = null;
+  panel._pantryPhotoRemove = true;
+
+  const preview =
+    panel.querySelector(
+      '#pantry-photo-preview'
+    );
+
+  const placeholder =
+    panel.querySelector(
+      '#pantry-photo-placeholder'
+    );
+
+  const removeBtn =
+    panel.querySelector(
+      '#pantry-photo-remove'
+    );
+
+  const status =
+    panel.querySelector(
+      '#pantry-photo-status'
+    );
+
+  if (preview) {
+    preview.removeAttribute('src');
+    preview.hidden = true;
+    preview.style.display = 'none';
+  }
+
+  if (placeholder) {
+    placeholder.hidden = false;
+  }
+
+  if (removeBtn) {
+    removeBtn.hidden = true;
+  }
+
+  if (status) {
+    status.textContent =
+      'Foto wird beim Speichern entfernt.';
+  }
 }
 
 
@@ -1631,6 +2249,13 @@ async function saveItem(panel, mode, item) {
     expires_on: panel.querySelector('#pantry-expires').value || null,
     min_quantity: minRaw === '' ? null : normalizePantryQuantity(minRaw, { fallback: 0 }),
     notes: panel.querySelector('#pantry-notes').value.trim() || null,
+
+    // Foto ist unabhängig vom Barcode optional.
+    photo_data:
+      panel._pantryPhotoData || null,
+
+    photo_remove:
+      panel._pantryPhotoRemove === true,
   };
 
   saveBtn.disabled = true;

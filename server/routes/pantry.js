@@ -14,15 +14,88 @@
  */
 
 import express from 'express';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import * as db from '../db.js';
 import { createLogger } from '../logger.js';
 import { str, oneOf, num, date, id as idParam, collectErrors, MAX_TITLE, MAX_TEXT, MAX_SHORT } from '../middleware/validate.js';
 import { normalizePantryUnit, normalizePantryQuantity } from '../../public/utils/pantry-units.js';
 import { syncPantryExpiryReminder, resolvePantryAccess } from '../services/pantry-reminders.js';
 import { todayKey as householdToday } from '../utils/timezone.js';
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from '../utils/upload-limit.js';
 
 const log = createLogger('Pantry');
 const router = express.Router();
+
+
+/**
+ * Lokale Erweiterung: optionale Produktfotos.
+ *
+ * Absichtlich KEINE Yuvomi-Migrationsnummer:
+ * lokale Erweiterungen dürfen nicht mit zukünftigen offiziellen
+ * schema_migrations kollidieren.
+ *
+ * Die Prüfung ist idempotent. Eine bestehende Installation behält
+ * ihre Spalten; bei einem frischen Custom-Build werden nur fehlende
+ * additive Spalten ergänzt.
+ */
+function ensureLocalPantryPhotoSchema() {
+  const database = db.get();
+
+  const existing =
+    new Set(
+      database
+        .prepare(
+          'PRAGMA table_info(pantry_items)'
+        )
+        .all()
+        .map(
+          (column) => column.name
+        )
+    );
+
+  const required = [
+    {
+      name: 'photo_key',
+      type: 'TEXT',
+    },
+    {
+      name: 'photo_mime',
+      type: 'TEXT',
+    },
+    {
+      name: 'photo_size',
+      type: 'INTEGER',
+    },
+  ];
+
+  for (
+    const column
+    of required
+  ) {
+    if (
+      existing.has(
+        column.name
+      )
+    ) {
+      continue;
+    }
+
+    database.exec(
+      `ALTER TABLE pantry_items ` +
+      `ADD COLUMN ${column.name} ${column.type}`
+    );
+
+    log.info(
+      `Local pantry photo schema: ` +
+      `added pantry_items.${column.name}`
+    );
+  }
+}
+
+ensureLocalPantryPhotoSchema();
+
 
 // --------------------------------------------------------
 // Hilfsfunktionen
@@ -43,6 +116,122 @@ function validCategoryNames() {
 function getItem(itemId) {
   return db.get().prepare('SELECT * FROM pantry_items WHERE id = ?').get(itemId);
 }
+
+const PANTRY_PHOTO_DIR =
+  process.env.PANTRY_PHOTO_DIR ||
+  '/data/pantry-photos';
+
+const PANTRY_PHOTO_TYPES = new Map([
+  ['image/jpeg', '.jpg'],
+  ['image/png', '.png'],
+  ['image/webp', '.webp'],
+]);
+
+function parsePantryPhotoData(dataUrl) {
+  if (typeof dataUrl !== 'string' || !dataUrl) {
+    return {
+      error: 'Keine Bilddaten erhalten.',
+    };
+  }
+
+  const match = dataUrl.match(
+    /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/
+  );
+
+  if (!match) {
+    return {
+      error:
+        'Ungültiges Bildformat. Unterstützt werden JPEG, PNG und WebP.',
+    };
+  }
+
+  const mime = match[1];
+  const extension = PANTRY_PHOTO_TYPES.get(mime);
+
+  if (!extension) {
+    return {
+      error: 'Nicht unterstütztes Bildformat.',
+    };
+  }
+
+  const buffer = Buffer.from(
+    match[2],
+    'base64'
+  );
+
+  if (!buffer.length) {
+    return {
+      error: 'Das Bild ist leer.',
+    };
+  }
+
+  if (buffer.length > MAX_UPLOAD_BYTES) {
+    return {
+      error:
+        `Das Bild ist zu groß. Maximal ${MAX_UPLOAD_MB} MB sind erlaubt.`,
+    };
+  }
+
+  return {
+    buffer,
+    mime,
+    extension,
+    size: buffer.length,
+  };
+}
+
+async function storePantryPhoto(parsed) {
+  await fs.mkdir(
+    PANTRY_PHOTO_DIR,
+    { recursive: true }
+  );
+
+  const key =
+    `${randomUUID()}${parsed.extension}`;
+
+  const destination =
+    path.join(
+      PANTRY_PHOTO_DIR,
+      key
+    );
+
+  await fs.writeFile(
+    destination,
+    parsed.buffer,
+    { mode: 0o600 }
+  );
+
+  return {
+    key,
+    mime: parsed.mime,
+    size: parsed.size,
+  };
+}
+
+async function removePantryPhoto(key) {
+  if (
+    !key ||
+    !/^[0-9a-f-]+\.(?:jpg|png|webp)$/i.test(key)
+  ) {
+    return;
+  }
+
+  try {
+    await fs.unlink(
+      path.join(
+        PANTRY_PHOTO_DIR,
+        key
+      )
+    );
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      log.warn(
+        `Pantry photo cleanup failed for ${key}: ${err.message}`
+      );
+    }
+  }
+}
+
 
 /**
  * Kurze Fassade auf server/services/pantry-reminders.js: die Regel, WANN ein
@@ -159,6 +348,96 @@ function validateItemFields(body, { partial = false, current = null } = {}) {
 
   return { values, errors: collectErrors(results) };
 }
+
+// --------------------------------------------------------
+// GET /api/v1/pantry/photo/:itemId
+// Liefert das optionale Foto eines Vorratsartikels.
+// Die Route liegt innerhalb der authentifizierten Pantry-API.
+// --------------------------------------------------------
+router.get('/photo/:itemId', async (req, res) => {
+  try {
+    const vId =
+      idParam(
+        req.params.itemId,
+        'Artikel-ID'
+      );
+
+    if (vId.error) {
+      return res.status(400).json({
+        error: vId.error,
+        code: 400,
+      });
+    }
+
+    const item = getItem(vId.value);
+
+    if (!item) {
+      return res.status(404).json({
+        error: 'Item not found.',
+        code: 404,
+      });
+    }
+
+    if (!item.photo_key) {
+      return res.status(404).json({
+        error: 'Kein Foto vorhanden.',
+        code: 404,
+      });
+    }
+
+    if (
+      !/^[0-9a-f-]+\.(?:jpg|png|webp)$/i
+        .test(item.photo_key)
+    ) {
+      log.error(
+        `Invalid pantry photo key for item ${item.id}`
+      );
+
+      return res.status(500).json({
+        error: 'Invalid photo reference.',
+        code: 500,
+      });
+    }
+
+    const file =
+      await fs.readFile(
+        path.join(
+          PANTRY_PHOTO_DIR,
+          item.photo_key
+        )
+      );
+
+    res.set(
+      'Content-Type',
+      item.photo_mime ||
+        'application/octet-stream'
+    );
+
+    res.set(
+      'Cache-Control',
+      'private, max-age=3600'
+    );
+
+    return res.send(file);
+  } catch (err) {
+    if (err?.code === 'ENOENT') {
+      return res.status(404).json({
+        error: 'Fotodatei nicht gefunden.',
+        code: 404,
+      });
+    }
+
+    log.error(
+      'GET /photo/:itemId error:',
+      err
+    );
+
+    return res.status(500).json({
+      error: 'Internal server error.',
+      code: 500,
+    });
+  }
+});
 
 // --------------------------------------------------------
 // GET /api/v1/pantry/barcode/:barcode
@@ -559,10 +838,31 @@ router.get('/', (_req, res) => {
 // Body: { name, quantity?, unit?, location_id?, category?, expires_on?, min_quantity?, notes? }
 // Response: { data: PantryItem }
 // --------------------------------------------------------
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
+  let newPhoto = null;
+
   try {
     const { values, errors } = validateItemFields(req.body);
     if (errors.length) return res.status(400).json({ error: errors.join(' '), code: 400 });
+
+    if (req.body.photo_data) {
+      const parsedPhoto =
+        parsePantryPhotoData(
+          req.body.photo_data
+        );
+
+      if (parsedPhoto.error) {
+        return res.status(400).json({
+          error: parsedPhoto.error,
+          code: 400,
+        });
+      }
+
+      newPhoto =
+        await storePantryPhoto(
+          parsedPhoto
+        );
+    }
 
     // Schreiben und Erinnerung in EINER Transaktion, wie in
     // server/routes/inventory/items.js: sonst kann der Artikel stehen und die
@@ -570,12 +870,34 @@ router.post('/', (req, res) => {
     const created = db.get().transaction(() => {
       const result = db.get().prepare(`
         INSERT INTO pantry_items
-          (name, quantity, unit, location_id, category, expires_on, min_quantity, notes, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (
+            name,
+            quantity,
+            unit,
+            location_id,
+            category,
+            expires_on,
+            min_quantity,
+            notes,
+            created_by,
+            photo_key,
+            photo_mime,
+            photo_size
+          )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        values.name, values.quantity, values.unit, values.location_id,
-        values.category, values.expires_on, values.min_quantity, values.notes,
-        req.authUserId || req.session.userId
+        values.name,
+        values.quantity,
+        values.unit,
+        values.location_id,
+        values.category,
+        values.expires_on,
+        values.min_quantity,
+        values.notes,
+        req.authUserId || req.session.userId,
+        newPhoto?.key ?? null,
+        newPhoto?.mime ?? null,
+        newPhoto?.size ?? null
       );
       const item = getItem(result.lastInsertRowid);
       syncReminder(item);
@@ -584,6 +906,12 @@ router.post('/', (req, res) => {
 
     res.status(201).json({ data: created });
   } catch (err) {
+    if (newPhoto?.key) {
+      await removePantryPhoto(
+        newPhoto.key
+      );
+    }
+
     log.error('POST / error:', err);
     res.status(500).json({ error: 'Internal server error.', code: 500 });
   }
@@ -594,7 +922,9 @@ router.post('/', (req, res) => {
 // Vollständiges Update (Bearbeiten-Formular).
 // Response: { data: PantryItem }
 // --------------------------------------------------------
-router.put('/:itemId', (req, res) => {
+router.put('/:itemId', async (req, res) => {
+  let newPhoto = null;
+
   try {
     const vId = idParam(req.params.itemId, 'Artikel-ID');
     if (vId.error) return res.status(400).json({ error: vId.error, code: 400 });
@@ -602,26 +932,102 @@ router.put('/:itemId', (req, res) => {
     const item = getItem(vId.value);
     if (!item) return res.status(404).json({ error: 'Item not found.', code: 404 });
 
+    if (req.body.photo_data) {
+      const parsedPhoto =
+        parsePantryPhotoData(
+          req.body.photo_data
+        );
+
+      if (parsedPhoto.error) {
+        return res.status(400).json({
+          error: parsedPhoto.error,
+          code: 400,
+        });
+      }
+
+      newPhoto =
+        await storePantryPhoto(
+          parsedPhoto
+        );
+    }
+
+    const removePhoto =
+      req.body.photo_remove === true &&
+      !newPhoto;
+
+    const nextPhotoKey =
+      newPhoto?.key ??
+      (removePhoto
+        ? null
+        : item.photo_key);
+
+    const nextPhotoMime =
+      newPhoto?.mime ??
+      (removePhoto
+        ? null
+        : item.photo_mime);
+
+    const nextPhotoSize =
+      newPhoto?.size ??
+      (removePhoto
+        ? null
+        : item.photo_size);
+
     const { values, errors } = validateItemFields(req.body, { current: item });
     if (errors.length) return res.status(400).json({ error: errors.join(' '), code: 400 });
 
     const updated = db.get().transaction(() => {
       db.get().prepare(`
         UPDATE pantry_items
-        SET name = ?, quantity = ?, unit = ?, location_id = ?, category = ?,
-            expires_on = ?, min_quantity = ?, notes = ?
+        SET
+          name = ?,
+          quantity = ?,
+          unit = ?,
+          location_id = ?,
+          category = ?,
+          expires_on = ?,
+          min_quantity = ?,
+          notes = ?,
+          photo_key = ?,
+          photo_mime = ?,
+          photo_size = ?
         WHERE id = ?
       `).run(
-        values.name, values.quantity, values.unit, values.location_id,
-        values.category, values.expires_on, values.min_quantity, values.notes, item.id
+        values.name,
+        values.quantity,
+        values.unit,
+        values.location_id,
+        values.category,
+        values.expires_on,
+        values.min_quantity,
+        values.notes,
+        nextPhotoKey,
+        nextPhotoMime,
+        nextPhotoSize,
+        item.id
       );
       const fresh = getItem(item.id);
       syncReminder(fresh);
       return fresh;
     })();
 
+    if (
+      item.photo_key &&
+      item.photo_key !== updated.photo_key
+    ) {
+      await removePantryPhoto(
+        item.photo_key
+      );
+    }
+
     res.json({ data: updated });
   } catch (err) {
+    if (newPhoto?.key) {
+      await removePantryPhoto(
+        newPhoto.key
+      );
+    }
+
     log.error('PUT /:itemId error:', err);
     res.status(500).json({ error: 'Internal server error.', code: 500 });
   }
@@ -672,10 +1078,19 @@ router.patch('/:itemId', (req, res) => {
 // DELETE /api/v1/pantry/:itemId
 // Response: 204
 // --------------------------------------------------------
-router.delete('/:itemId', (req, res) => {
+router.delete('/:itemId', async (req, res) => {
   try {
     const vId = idParam(req.params.itemId, 'Artikel-ID');
     if (vId.error) return res.status(400).json({ error: vId.error, code: 400 });
+
+    const item = getItem(vId.value);
+
+    if (!item) {
+      return res.status(404).json({
+        error: 'Item not found.',
+        code: 404,
+      });
+    }
 
     const removed = db.get().transaction(() => {
       const result = db.get().prepare('DELETE FROM pantry_items WHERE id = ?').run(vId.value);
@@ -688,6 +1103,12 @@ router.delete('/:itemId', (req, res) => {
       return true;
     })();
     if (!removed) return res.status(404).json({ error: 'Item not found.', code: 404 });
+
+    if (item.photo_key) {
+      await removePantryPhoto(
+        item.photo_key
+      );
+    }
 
     res.status(204).end();
   } catch (err) {
