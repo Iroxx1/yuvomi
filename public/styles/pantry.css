@@ -460,3 +460,29 @@
     transition: none;
   }
 }
+
+/* --------------------------------------------------------
+ * Eigene Produktfotos in der Vorratsliste
+ * -------------------------------------------------------- */
+
+.pantry-row__photo {
+  width: var(--target-lg);
+  height: var(--target-lg);
+  flex: 0 0 var(--target-lg);
+  align-self: center;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+/*
+ * Auf sehr schmalen Listen bleibt das Bild kompakt,
+ * ohne die Bedienknöpfe oder den Artikelnamen zu verdrängen.
+ */
+@container list-rows (max-width: 22rem) {
+  .pantry-row__photo {
+    width: var(--target-md);
+    height: var(--target-md);
+    flex-basis: var(--target-md);
+  }
+}

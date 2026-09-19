@@ -662,6 +662,39 @@ function rowEl(item) {
   li.dataset.id = String(item.id);
   if (status.out) li.classList.add('pantry-row--out');
 
+  let photo = null;
+
+  if (item.photo_key) {
+    photo = document.createElement('img');
+
+    photo.className =
+      'pantry-row__photo';
+
+    photo.src =
+      `/api/v1/pantry/photo/${item.id}` +
+      `?v=${encodeURIComponent(item.photo_key)}`;
+
+    // Name steht direkt daneben; das Bild ist rein visuelle Orientierung.
+    photo.alt = '';
+
+    photo.loading = 'lazy';
+    photo.decoding = 'async';
+
+    // Falls eine alte/verwaiste Datei fehlt, bleibt die Zeile trotzdem sauber.
+    photo.addEventListener(
+      'error',
+      () => {
+        photo.remove();
+      },
+      { once: true }
+    );
+
+    li.classList.add(
+      'list-row--tight',
+      'pantry-row--with-photo'
+    );
+  }
+
   // Klickfläche: öffnet das Bearbeiten-Formular. Die Stepper-Buttons daneben
   // sind eigene Stops und dürfen nicht durchschlagen.
   // BEWUSST kein aria-label: es hätte den Namen aus dem Inhalt überschrieben
@@ -841,7 +874,19 @@ function rowEl(item) {
   // damit gegen die Leserichtung und gegen alle drei Geschwistermodule, die
   // ausnahmslos mit dem Namen führen. Nebeneffekt: die Namenskante steht jetzt
   // von selbst, statt mit der Stepper-Breite zu wandern (Critique 2026-07-29).
-  li.append(main, actions);
+  if (photo) {
+    li.append(
+      photo,
+      main,
+      actions
+    );
+  } else {
+    li.append(
+      main,
+      actions
+    );
+  }
+
   return li;
 }
 
