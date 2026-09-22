@@ -2539,6 +2539,7 @@ async function saveItem(panel, mode, item) {
     category: panel.querySelector('#pantry-category').value,
     expires_on: panel.querySelector('#pantry-expires').value || null,
     min_quantity: minRaw === '' ? null : normalizePantryQuantity(minRaw, { fallback: 0 }),
+    barcode: panel.querySelector('#pantry-barcode')?.value?.trim() || null,
     notes: panel.querySelector('#pantry-notes').value.trim() || null,
 
     // Foto ist unabhängig vom Barcode optional.
