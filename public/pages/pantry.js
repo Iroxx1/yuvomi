@@ -110,6 +110,11 @@ function withIntent(item) {
   return intent ? { ...item, quantity: intent.quantity } : item;
 }
 
+/** Nur Artikel mit tatsächlich vorhandenem Bestand. */
+function isNonEmpty(item) {
+  return Number(item?.quantity ?? 0) > 0;
+}
+
 /** Kamera-Stream des Barcode-Scanners. */
 let _pantryBarcodeStream = null;
 let _pantryBarcodeActive = false;
@@ -222,7 +227,11 @@ function visibleItems() {
   // Gefiltert wird nach dem, was die Zeile ZEIGT - sonst faellt ein Artikel aus
   // „Fast leer", waehrend die Zeile ihn noch dort zeigt.
   return state.items.map(withIntent).filter((item) => {
-    if (!matchesPantryFilter(item, state.filter, state.todayKey)) return false;
+    if (state.filter === 'nonempty') {
+      if (!isNonEmpty(item)) return false;
+    } else if (!matchesPantryFilter(item, state.filter, state.todayKey)) {
+      return false;
+    }
 
     if (state.locationFilter !== 'all') {
       if (state.locationFilter === 'none') {
@@ -662,12 +671,18 @@ function renderFilters() {
     wireScrollFade(bar);
   }
 
-  const counts = pantryFilterCounts(state.items.map(withIntent), state.todayKey);
+  const itemsWithIntent = state.items.map(withIntent);
+  const counts = pantryFilterCounts(itemsWithIntent, state.todayKey);
+  const nonEmptyCount = itemsWithIntent.filter(isNonEmpty).length;
   const active = PANTRY_FILTERS.filter((key) => counts[key] > 0);
 
   // Der aktive Filter hat gerade seinen letzten Treffer verloren → zurück auf Alle.
   const previousFilter = state.filter;
-  if (state.filter !== 'all' && !active.includes(state.filter)) state.filter = 'all';
+  if (
+    state.filter !== 'all'
+    && state.filter !== 'nonempty'
+    && !active.includes(state.filter)
+  ) state.filter = 'all';
   const wasReset = state.filter !== previousFilter;
 
   // replaceChildren zerstört den fokussierten Chip; ohne Rettung landet der
@@ -675,7 +690,7 @@ function renderFilters() {
   const hadFocus = bar.contains(document.activeElement);
 
   bar.replaceChildren();
-  if (!active.length || !state.items.length) {
+  if (!state.items.length) {
     bar.hidden = true;
     return { wasReset };
   }
@@ -691,6 +706,12 @@ function renderFilters() {
   for (const key of active) {
     chips.push({ id: key, label: t(labels[key].key), icon: labels[key].icon, count: counts[key] });
   }
+  chips.push({
+    id: 'nonempty',
+    label: 'Nicht leer',
+    icon: 'package-check',
+    count: nonEmptyCount,
+  });
 
   bar.insertAdjacentHTML('beforeend', chips.map((chip) => `
     <button type="button" class="filter-chip${chip.id === state.filter ? ' filter-chip--active' : ''}"
@@ -835,7 +856,9 @@ function noResultsEl() {
   const active = [];
   if (state.query) active.push(`„${state.query}"`);
   if (state.filter !== 'all') {
-    active.push(t({ expired: 'pantry.filterExpired', soon: 'pantry.filterSoon', low: 'pantry.filterLow' }[state.filter]));
+    active.push((state.filter === 'nonempty'
+      ? 'Nicht leer'
+      : t({ expired: 'pantry.filterExpired', soon: 'pantry.filterSoon', low: 'pantry.filterLow' }[state.filter])));
   }
 
   return emptyStateComponentEl({
