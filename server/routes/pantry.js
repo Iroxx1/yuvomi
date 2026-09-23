@@ -845,6 +845,22 @@ router.post('/', async (req, res) => {
     const { values, errors } = validateItemFields(req.body);
     if (errors.length) return res.status(400).json({ error: errors.join(' '), code: 400 });
 
+    const rawBarcode =
+      String(req.body.barcode ?? '').trim();
+
+    const barcodeValue =
+      rawBarcode || null;
+
+    if (
+      barcodeValue &&
+      !/^[0-9]{8,14}$/.test(barcodeValue)
+    ) {
+      return res.status(400).json({
+        error: 'Ungültiger Barcode.',
+        code: 400,
+      });
+    }
+
     if (req.body.photo_data) {
       const parsedPhoto =
         parsePantryPhotoData(
@@ -879,12 +895,13 @@ router.post('/', async (req, res) => {
             expires_on,
             min_quantity,
             notes,
+            barcode,
             created_by,
             photo_key,
             photo_mime,
             photo_size
           )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         values.name,
         values.quantity,
@@ -894,6 +911,7 @@ router.post('/', async (req, res) => {
         values.expires_on,
         values.min_quantity,
         values.notes,
+        barcodeValue,
         req.authUserId || req.session.userId,
         newPhoto?.key ?? null,
         newPhoto?.mime ?? null,
@@ -976,6 +994,25 @@ router.put('/:itemId', async (req, res) => {
     const { values, errors } = validateItemFields(req.body, { current: item });
     if (errors.length) return res.status(400).json({ error: errors.join(' '), code: 400 });
 
+    let nextBarcode = item.barcode ?? null;
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'barcode')) {
+      const rawBarcode =
+        String(req.body.barcode ?? '').trim();
+
+      if (
+        rawBarcode &&
+        !/^[0-9]{8,14}$/.test(rawBarcode)
+      ) {
+        return res.status(400).json({
+          error: 'Ungültiger Barcode.',
+          code: 400,
+        });
+      }
+
+      nextBarcode = rawBarcode || null;
+    }
+
     const updated = db.get().transaction(() => {
       db.get().prepare(`
         UPDATE pantry_items
@@ -987,6 +1024,7 @@ router.put('/:itemId', async (req, res) => {
           category = ?,
           expires_on = ?,
           min_quantity = ?,
+          barcode = ?,
           notes = ?,
           photo_key = ?,
           photo_mime = ?,
@@ -1000,6 +1038,7 @@ router.put('/:itemId', async (req, res) => {
         values.category,
         values.expires_on,
         values.min_quantity,
+        nextBarcode,
         values.notes,
         nextPhotoKey,
         nextPhotoMime,
