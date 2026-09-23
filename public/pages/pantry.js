@@ -1654,8 +1654,18 @@ function openItemModal(mode, item = null) {
       </div>`,
     onSave(panel) {
       panel.querySelector('#pantry-name').value = isEdit ? item.name : '';
+
+      const initialBarcode =
+        isEdit && item.barcode
+          ? String(item.barcode)
+          : '';
+
       panel.querySelector('#pantry-barcode').value =
-        isEdit && item.barcode ? String(item.barcode) : '';
+        initialBarcode;
+
+      panel._pantryBarcode =
+        initialBarcode;
+
       panel.querySelector('#pantry-quantity').value = isEdit ? String(item.quantity) : '1';
       panel.querySelector('#pantry-unit').value = isEdit ? item.unit : 'pcs';
       panel.querySelector('#pantry-location').value = isEdit && item.location_id ? String(item.location_id) : '';
@@ -1756,6 +1766,11 @@ function openItemModal(mode, item = null) {
       );
 
       const barcodeInput = panel.querySelector('#pantry-barcode');
+
+      barcodeInput?.addEventListener('input', () => {
+        panel._pantryBarcode =
+          barcodeInput.value.trim();
+      });
 
       panel.querySelector('#pantry-barcode-lookup')?.addEventListener('click', async () => {
         const barcode = barcodeInput?.value.trim();
@@ -2221,6 +2236,10 @@ async function lookupPantryBarcode(panel, barcode) {
   }
 
   if (input) input.value = cleanBarcode;
+
+  // Nicht nur im DOM behalten:
+  // manche Modal-/App-Zyklen setzen Inputwerte zurück.
+  panel._pantryBarcode = cleanBarcode;
   if (lookupBtn) lookupBtn.disabled = true;
 
   if (status) {
@@ -2541,7 +2560,11 @@ async function saveItem(panel, mode, item) {
     category: panel.querySelector('#pantry-category').value,
     expires_on: panel.querySelector('#pantry-expires').value || null,
     min_quantity: minRaw === '' ? null : normalizePantryQuantity(minRaw, { fallback: 0 }),
-    barcode: panel.querySelector('#pantry-barcode')?.value?.trim() || null,
+    barcode: String(
+      panel._pantryBarcode ??
+      panel.querySelector('#pantry-barcode')?.value ??
+      ''
+    ).trim() || null,
     notes: panel.querySelector('#pantry-notes').value.trim() || null,
 
     // Foto ist unabhängig vom Barcode optional.

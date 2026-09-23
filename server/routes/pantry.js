@@ -1010,7 +1010,12 @@ router.put('/:itemId', async (req, res) => {
         });
       }
 
-      nextBarcode = rawBarcode || null;
+      // Leerer Wert beim normalen Bearbeiten darf eine vorhandene
+      // EAN nicht versehentlich löschen. Einen echten neuen Barcode
+      // übernehmen wir dagegen sofort.
+      if (rawBarcode) {
+        nextBarcode = rawBarcode;
+      }
     }
 
     const updated = db.get().transaction(() => {
