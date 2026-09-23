@@ -1764,7 +1764,7 @@ function openItemModal(mode, item = null) {
     title: isEdit ? t('common.editItem') : t('pantry.addItem'),
     size: 'md',
     content: `
-      ${!isEdit ? `
+      ${`
       <div class="form-group">
         <label class="form-label" for="pantry-barcode">
           Barcode / EAN
@@ -1826,7 +1826,7 @@ function openItemModal(mode, item = null) {
           Barcode scannen oder Nummer manuell eingeben.
         </p>
       </div>
-      ` : ''}
+      `}
 
       <div class="form-group">
         <label class="form-label" for="pantry-name">${esc(t('common.nameLabel'))}${REQUIRED_MARK}</label>
@@ -2002,6 +2002,8 @@ function openItemModal(mode, item = null) {
       </div>`,
     onSave(panel) {
       panel.querySelector('#pantry-name').value = isEdit ? item.name : '';
+      panel.querySelector('#pantry-barcode').value =
+        isEdit && item.barcode ? String(item.barcode) : '';
       panel.querySelector('#pantry-quantity').value = isEdit ? String(item.quantity) : '1';
       panel.querySelector('#pantry-unit').value = isEdit ? item.unit : 'pcs';
       panel.querySelector('#pantry-location').value = isEdit && item.location_id ? String(item.location_id) : '';
