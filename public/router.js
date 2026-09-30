@@ -3712,8 +3712,14 @@ function navCatalog() {
   return navItems({ catalog: true });
 }
 
+function isKitchenMainNavRoute(path) {
+  return isKitchenRoute(path) && path !== '/pantry';
+}
+
 function currentKitchenDestination() {
-  const kitchenItems = navItems().filter((item) => item.kitchenGroup);
+  const kitchenItems = navItems().filter(
+    (item) => item.kitchenGroup && item.module !== 'pantry'
+  );
   return kitchenItems.find((item) => item.path === getLastKitchenRoute()) ?? kitchenItems[0] ?? null;
 }
 
@@ -3735,6 +3741,11 @@ function mobileNavigationCandidates() {
           });
         }
         kitchenAdded = true;
+      }
+
+      // Vorrat darf zusätzlich als eigener mobiler Favorit gewählt werden.
+      if (item.module === 'pantry') {
+        candidates.push({ ...item, navId: 'pantry' });
       }
       continue;
     }
@@ -3822,8 +3833,16 @@ function sidebarNavItems() {
 
     if (item.kitchenGroup) {
       if (!kitchenAdded) {
-        appendNavEl(sidebarKitchenEl());
+        const kitchen = currentKitchenDestination();
+        if (kitchen) {
+          appendNavEl(sidebarKitchenEl());
+        }
         kitchenAdded = true;
+      }
+
+      // Vorrat zusätzlich als direkter Sidebar-Link direkt unter Küche.
+      if (item.module === 'pantry') {
+        appendNavEl(navItemEl({ ...item, navId: 'pantry' }));
       }
       return;
     }
@@ -4125,11 +4144,12 @@ function positionTabIndicator() {
 }
 
 function sidebarKitchenEl() {
+  const destination = currentKitchenDestination();
   const item = {
-    path: getLastKitchenRoute(),
+    path: destination?.path ?? '/meals',
     label: t('nav.kitchen'),
     icon: MODULE_ICON.kitchen,
-    module: navItems().find((n) => n.path === getLastKitchenRoute())?.module || 'meals',
+    module: destination?.module ?? 'meals',
     navId: 'kitchen',
   };
   const a = navItemEl(item);

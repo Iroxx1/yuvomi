@@ -319,6 +319,7 @@ const PAGE_MODULES = [
   '/pages/recipes.js',
   '/pages/pantry.js',
   '/pages/inventory.js',
+  '/utils/inventory-barcode.js',
   '/pages/budget-plans.js',
   '/pages/budget-stats.js',
   '/pages/split-expenses.js',
