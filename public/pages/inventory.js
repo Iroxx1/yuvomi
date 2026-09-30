@@ -29,6 +29,7 @@ import { renderDocumentAttachField, bindDocumentAttachField } from '/components/
 import { warrantyStatus, hasUpcomingDeadline, dateStatus, countUpcomingDeadlines } from '/utils/inventory-warranty.js';
 import { openDetailView } from '/components/detail-view.js';
 import { wireScrollFade } from '/utils/ux.js';
+import { wireInventoryBarcode, stopInventoryBarcodeScanner } from '/utils/inventory-barcode.js';
 import { attachOverlay } from '/utils/overlay-history.js';
 import { setNavBadge } from '/utils/nav-badges.js';
 
@@ -757,6 +758,7 @@ function renderItemDetail(item) {
     { icon: item.category_icon, label: t('inventory.categoryLabel'), value: itemCategoryLabel(item) },
     { icon: 'map-pin', label: t('inventory.locationLabel'), value: item.location_path || '' },
     { icon: 'building-2', label: t('inventory.brandLabel'), value: item.brand || '' },
+    { icon: 'scan-line', label: 'Barcode / EAN', value: item.barcode || '' },
     { icon: 'package', label: t('inventory.modelLabel'), value: item.model || '' },
     { icon: 'hash', label: t('inventory.serialNumberLabel'), value: item.serial_number || '' },
     { icon: 'calendar', label: t('inventory.purchaseDateLabel'), value: item.purchase_date ? formatDate(item.purchase_date) : '' },
@@ -1195,6 +1197,26 @@ function buildItemForm({ mode, item = null }) {
 
   const content = `
       <div class="form-group">
+        <label class="form-label" for="inv-barcode">Barcode / EAN</label>
+        <input id="inv-barcode" class="form-input" type="text" inputmode="numeric"
+               autocomplete="off" placeholder="EAN oder UPC eingeben">
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
+          <button type="button" class="btn btn--secondary" id="inv-barcode-lookup">
+            <i data-lucide="search" class="icon-sm" aria-hidden="true"></i> Suchen
+          </button>
+          <button type="button" class="btn btn--secondary" id="inv-barcode-scan">
+            <i data-lucide="scan-line" class="icon-sm" aria-hidden="true"></i> Barcode scannen
+          </button>
+        </div>
+        <video id="inv-barcode-video" autoplay playsinline muted hidden
+               style="width:100%;max-height:320px;object-fit:cover;border-radius:12px;margin-top:.75rem;background:#000"></video>
+        <button type="button" class="btn btn--secondary" id="inv-barcode-stop" hidden
+                style="margin-top:.5rem">Scanner schließen</button>
+        <p id="inv-barcode-status" class="form-hint" aria-live="polite">
+          Kosmetik und andere Produkte scannen oder Nummer manuell eingeben.
+        </p>
+      </div>
+      <div class="form-group">
         <label class="form-label" for="inv-name">${esc(t('common.nameLabel'))}</label>
         <input id="inv-name" class="form-input" type="text" required placeholder="${esc(t('inventory.namePlaceholder'))}">
       </div>
@@ -1326,6 +1348,8 @@ function buildItemForm({ mode, item = null }) {
       </div>`;
 
   function wire(panel) {
+    panel.querySelector('#inv-barcode').value = isEdit && item.barcode ? item.barcode : '';
+    wireInventoryBarcode(panel, { autoStart: !isEdit });
     panel.querySelector('#inv-name').value = isEdit ? item.name : '';
     panel.querySelector('#inv-category').value = isEdit ? item.category : 'other';
     panel.querySelector('#inv-location').value = isEdit && item.location_id ? String(item.location_id) : '';
@@ -1472,7 +1496,8 @@ function buildItemForm({ mode, item = null }) {
 
 function openItemModal(mode, item = null) {
   const form = buildItemForm({ mode, item });
-  openSharedModal({ title: form.title, size: 'md', content: form.content, onSave: form.wire });
+  openSharedModal({ title: form.title, size: 'md', initialFocus: 'none',
+    content: form.content, onSave: form.wire, onClose: () => stopInventoryBarcodeScanner() });
 }
 
 async function saveItem(panel, mode, item, attachments, pickedBooking, photoData) {
@@ -1486,6 +1511,7 @@ async function saveItem(panel, mode, item, attachments, pickedBooking, photoData
 
   const payload = {
     name,
+    barcode: panel.querySelector('#inv-barcode').value.trim() || null,
     category: panel.querySelector('#inv-category').value,
     location_id: panel.querySelector('#inv-location').value || null,
     purchase_date: panel.querySelector('#inv-purchase-date').value || null,

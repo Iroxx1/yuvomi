@@ -8475,6 +8475,15 @@ const MIGRATIONS = [
       ALTER TABLE cycle_reminder_anchors_new RENAME TO cycle_reminder_anchors;
     `,
   },
+  {
+    version: 214,
+    description: 'Inventory: optional barcode for household products',
+    up: `
+      ALTER TABLE inventory_items ADD COLUMN barcode TEXT;
+      CREATE INDEX idx_inventory_items_barcode ON inventory_items(barcode)
+        WHERE barcode IS NOT NULL;
+    `,
+  },
 ];
 
 /**

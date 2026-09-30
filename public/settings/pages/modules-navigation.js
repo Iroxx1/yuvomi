@@ -311,7 +311,7 @@ function rowHtml(row) {
 }
 
 function mobileCandidateRows(rows) {
-  return rows.filter((row) => (
+  const candidates = rows.filter((row) => (
     row.enabled
     // Wer ein Modul aus seiner Navigation nimmt, will es auch nicht als
     // Mobil-Favorit angeboten bekommen (#673).
@@ -320,6 +320,35 @@ function mobileCandidateRows(rows) {
     && row.sortable
     && !row.menuHidden
   ));
+
+  // Küche bleibt als Gruppe bestehen, Vorrat darf zusätzlich
+  // als direkter mobiler Favorit gewählt werden.
+  const kitchen = rows.find((row) => row.type === 'kitchen');
+  const pantry = kitchen?.children?.find((child) => child.id === 'pantry');
+
+  if (pantry?.enabled && !pantry.hidden) {
+    const pantryCandidate = {
+      orderId: 'pantry',
+      label: pantry.label,
+      enabled: true,
+      hidden: false,
+      locked: false,
+      sortable: true,
+      menuHidden: false,
+    };
+
+    const kitchenIndex = candidates.findIndex(
+      (row) => row.orderId === 'kitchen'
+    );
+
+    candidates.splice(
+      kitchenIndex >= 0 ? kitchenIndex + 1 : candidates.length,
+      0,
+      pantryCandidate
+    );
+  }
+
+  return candidates;
 }
 
 function mobileSlotHtml(rows, selectedIds, index) {

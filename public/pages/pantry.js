@@ -1415,6 +1415,8 @@ function openItemModal(mode, item = null) {
   openSharedModal({
     title: isEdit ? t('common.editItem') : t('pantry.addItem'),
     size: 'md',
+    initialFocus: 'none',
+    onClose: () => stopPantryBarcodeScanner(),
     content: `
       ${`
       <div class="form-group">
@@ -1653,6 +1655,10 @@ function openItemModal(mode, item = null) {
         <button type="button" class="btn btn--primary" id="pantry-save">${esc(isEdit ? t('common.save') : t('common.add'))}</button>
       </div>`,
     onSave(panel) {
+      // Keep focus inside the dialog without opening the mobile keyboard.
+      const heading = panel.querySelector('#shared-modal-title');
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
       panel.querySelector('#pantry-name').value = isEdit ? item.name : '';
 
       const initialBarcode =
@@ -1807,6 +1813,7 @@ function openItemModal(mode, item = null) {
 
       wireBlurValidation(panel);
       if (window.lucide) window.lucide.createIcons({ el: panel });
+      if (!isEdit) void startPantryBarcodeScanner(panel);
     },
   });
 }
@@ -2316,6 +2323,8 @@ async function lookupPantryBarcode(panel, barcode) {
 /**
  * Rückkamera öffnen und EAN-/UPC-Code erkennen.
  */
+let _pantryScannerGeneration = 0;
+
 async function startPantryBarcodeScanner(panel) {
   const video =
     panel.querySelector('#pantry-barcode-video');
@@ -2330,6 +2339,8 @@ async function startPantryBarcodeScanner(panel) {
     panel.querySelector('#pantry-barcode-status');
 
   stopPantryBarcodeScanner(panel);
+  const generation = _pantryScannerGeneration;
+  const cancelled = () => generation !== _pantryScannerGeneration || !video?.isConnected;
 
   /*
    * Kamerazugriff ist außerhalb von localhost normalerweise
@@ -2362,6 +2373,7 @@ async function startPantryBarcodeScanner(panel) {
   try {
     const supported =
       await globalThis.BarcodeDetector.getSupportedFormats();
+    if (cancelled()) return;
 
     const formats = [
       'ean_13',
@@ -2401,6 +2413,11 @@ async function startPantryBarcodeScanner(panel) {
         audio: false,
       });
 
+    if (cancelled()) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
+
     _pantryBarcodeStream = stream;
     _pantryBarcodeActive = true;
 
@@ -2411,13 +2428,14 @@ async function startPantryBarcodeScanner(panel) {
     if (stopBtn) stopBtn.hidden = false;
 
     await video.play();
+    if (cancelled()) return;
 
     if (status) {
       status.textContent =
         'Barcode vor die Kamera halten …';
     }
 
-    while (_pantryBarcodeActive) {
+    while (_pantryBarcodeActive && !cancelled()) {
       /*
        * Modal inzwischen geschlossen:
        * Kamera automatisch abschalten.
@@ -2431,6 +2449,7 @@ async function startPantryBarcodeScanner(panel) {
         if (video.readyState >= 2) {
           const codes =
             await detector.detect(video);
+          if (cancelled()) break;
 
           const result = codes.find(
             (entry) =>
@@ -2473,6 +2492,7 @@ async function startPantryBarcodeScanner(panel) {
       );
     }
   } catch (err) {
+    if (cancelled()) return;
     console.error(
       'Pantry barcode scanner:',
       err
@@ -2497,6 +2517,7 @@ async function startPantryBarcodeScanner(panel) {
  * Kamera und Scan-Schleife vollständig stoppen.
  */
 function stopPantryBarcodeScanner(panel = null) {
+  _pantryScannerGeneration += 1;
   _pantryBarcodeActive = false;
 
   if (_pantryBarcodeStream) {

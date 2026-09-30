@@ -164,14 +164,34 @@ export function sortNavigationItems(items = [], order = []) {
     .map(({ item }) => item);
 }
 
+function normalizeMobileNavIds(order = [], limit = Number.POSITIVE_INFINITY) {
+  const normalized = [];
+  const seen = new Set();
+
+  for (const rawId of Array.isArray(order) ? order : []) {
+    // Mahlzeiten, Rezepte und Einkauf bleiben unter "Küche".
+    // Vorrat ist absichtlich ein eigenständiges mobiles Ziel.
+    const id = KITCHEN_CHILD_ID_SET.has(rawId) && rawId !== 'pantry'
+      ? 'kitchen'
+      : rawId;
+
+    if (!isMobileNavId(id) || seen.has(id)) continue;
+
+    normalized.push(id);
+    seen.add(id);
+
+    if (normalized.length === limit) break;
+  }
+
+  return normalized;
+}
+
 export function normalizeMobileNavOrder(order = []) {
-  return normalizeModuleOrder(order)
-    .filter(isMobileNavId)
-    .slice(0, 3);
+  return normalizeMobileNavIds(order, 3);
 }
 
 export function resolveMobileNavOrder(order = [], availableIds = []) {
-  const available = normalizeModuleOrder(availableIds).filter(isMobileNavId);
+  const available = normalizeMobileNavIds(availableIds);
   const availableSet = new Set(available);
   const resolved = [];
 

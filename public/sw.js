@@ -18,7 +18,7 @@
  */
 
 const APP_RELEASE   = '2.67.0-local-pantry-nav1';
-const APP_BUILD_REVISION = 'barcode-state-20260923-1';
+const APP_BUILD_REVISION = 'inventory-barcode-20260926-2';
 const CACHE_RELEASE      = `${APP_RELEASE}-${APP_BUILD_REVISION}`;
 const SHELL_CACHE        = `yuvomi-shell-${CACHE_RELEASE}`;
 const PAGES_CACHE        = `yuvomi-pages-${CACHE_RELEASE}`;
@@ -272,6 +272,7 @@ const PAGE_MODULES = [
   '/pages/recipes.js',
   '/pages/pantry.js',
   '/pages/inventory.js',
+  '/utils/inventory-barcode.js',
   '/pages/budget-plans.js',
   '/pages/budget-stats.js',
   '/pages/split-expenses.js',

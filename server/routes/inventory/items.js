@@ -131,9 +131,9 @@ function loadItems({ category, locationId, status, q } = {}, userId) {
     // account_username ist mitgesucht (#1004): das Feld traegt kein Geheimnis,
     // und "wo ist das Geraet, das unter dieser Adresse laeuft" ist genau die
     // Frage, fuer die es angelegt wurde.
-    clauses.push('(ii.name LIKE ? OR ii.brand LIKE ? OR ii.model LIKE ? OR ii.serial_number LIKE ? OR ii.account_username LIKE ?)');
+    clauses.push('(ii.name LIKE ? OR ii.brand LIKE ? OR ii.model LIKE ? OR ii.serial_number LIKE ? OR ii.account_username LIKE ? OR ii.barcode LIKE ?)');
     const like = `%${q}%`;
-    params.push(like, like, like, like, like);
+    params.push(like, like, like, like, like, like);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const rows = db.get().prepare(`
@@ -176,6 +176,12 @@ function validateItemFields(body) {
   const vBrand = str(body.brand, 'Marke', { max: MAX_SHORT, required: false });
   results.push(vBrand);
   values.brand = vBrand.value;
+
+  const barcode = String(body.barcode ?? '').trim();
+  if (barcode && !/^\d{8,14}$/.test(barcode)) {
+    results.push({ error: 'Barcode muss aus 8 bis 14 Ziffern bestehen.' });
+  }
+  values.barcode = barcode || null;
 
   const vModel = str(body.model, 'Modell', { max: MAX_SHORT, required: false });
   results.push(vModel);
@@ -352,12 +358,12 @@ router.post('/', (req, res) => {
     const result = db.get().transaction(() => {
       const inserted = db.get().prepare(`
         INSERT INTO inventory_items
-          (name, brand, model, serial_number, category, location_id, purchase_date,
+          (name, brand, barcode, model, serial_number, category, location_id, purchase_date,
            purchase_price, currency, vendor, warranty_months, condition,
            status, notes, photo_data, account_username, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        values.name, values.brand, values.model, values.serial_number, values.category,
+        values.name, values.brand, values.barcode, values.model, values.serial_number, values.category,
         values.location_id, values.purchase_date, values.purchase_price,
         values.currency, values.vendor, values.warranty_months, values.condition, values.status,
         values.notes, values.photo_data, values.account_username, userId,
@@ -425,13 +431,13 @@ router.put('/:id', (req, res) => {
     db.get().transaction(() => {
       db.get().prepare(`
         UPDATE inventory_items
-        SET name = ?, brand = ?, model = ?, serial_number = ?, category = ?, location_id = ?,
+        SET name = ?, brand = ?, barcode = ?, model = ?, serial_number = ?, category = ?, location_id = ?,
             purchase_date = ?, purchase_price = ?, currency = ?, vendor = ?,
             warranty_months = ?, condition = ?, status = ?, notes = ?, photo_data = ?,
             account_username = ?
         WHERE id = ?
       `).run(
-        values.name, values.brand, values.model, values.serial_number, values.category,
+        values.name, values.brand, values.barcode, values.model, values.serial_number, values.category,
         values.location_id, values.purchase_date, values.purchase_price,
         values.currency, values.vendor, values.warranty_months, values.condition, values.status,
         values.notes, values.photo_data, values.account_username, item.id,
