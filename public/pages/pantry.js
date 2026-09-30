@@ -1672,6 +1672,10 @@ function openItemModal(mode, item = null) {
       panel._pantryBarcode =
         initialBarcode;
 
+      // Beim Bearbeiten übernimmt ein Scan nur die EAN - Name, Menge und
+      // Einheit gehören dem vorhandenen Bestand (siehe lookupPantryBarcode).
+      panel._pantryIsEdit = isEdit;
+
       panel.querySelector('#pantry-quantity').value = isEdit ? String(item.quantity) : '1';
       panel.querySelector('#pantry-unit').value = isEdit ? item.unit : 'pcs';
       panel.querySelector('#pantry-location').value = isEdit && item.location_id ? String(item.location_id) : '';
@@ -2273,16 +2277,21 @@ async function lookupPantryBarcode(panel, barcode) {
     const unitInput =
       panel.querySelector('#pantry-unit');
 
-    if (nameInput) {
+    // Bearbeiten: vorhandenen Bestand nicht überschreiben. Die Packungsgröße
+    // aus OFF ist nicht der Bestand, und ein geänderter Name passt nicht mehr
+    // zur Einkaufsliste (import-shopping führt nach Namen zusammen).
+    const editing = panel._pantryIsEdit === true;
+
+    if (nameInput && (!editing || !nameInput.value.trim())) {
       nameInput.value = product.name || '';
     }
 
-    if (quantityInput) {
+    if (quantityInput && !editing) {
       quantityInput.value =
         String(product.quantity ?? 1);
     }
 
-    if (unitInput) {
+    if (unitInput && !editing) {
       unitInput.value =
         product.unit || 'pcs';
     }
@@ -2294,8 +2303,9 @@ async function lookupPantryBarcode(panel, barcode) {
     ].filter(Boolean);
 
     if (status) {
-      status.textContent =
-        `Gefunden: ${details.join(' · ')}`;
+      status.textContent = editing
+        ? `Gefunden: ${details.join(' · ')} – EAN wird beim Speichern übernommen, Name und Menge bleiben.`
+        : `Gefunden: ${details.join(' · ')}`;
     }
 
     window.yuvomi?.showToast(

@@ -18,7 +18,7 @@
  */
 
 const APP_RELEASE   = '2.67.0-local-pantry-nav1';
-const APP_BUILD_REVISION = 'inventory-barcode-20260926-2';
+const APP_BUILD_REVISION = 'pantry-scan-edit-20260930-1';
 const CACHE_RELEASE      = `${APP_RELEASE}-${APP_BUILD_REVISION}`;
 const SHELL_CACHE        = `yuvomi-shell-${CACHE_RELEASE}`;
 const PAGES_CACHE        = `yuvomi-pages-${CACHE_RELEASE}`;
