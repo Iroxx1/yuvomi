@@ -256,7 +256,8 @@ test('das Detail ist gegliedert: Kopfzeilen, dann Kauf / Garantie / Zustand / Be
   assert.ok(labels('inventory.detailGroupCondition').includes('inventory.statusLabel'), 'das Detail nennt den Status immer');
   // Keine Zeile ging beim Gliedern verloren.
   const all = sections.flatMap((s) => (Array.isArray(s.rows) ? s.rows : [s])).map((r) => r.label);
-  assert.equal(all.length, 19, 'alle Angaben des Gegenstands stehen weiter im Detail');
+  // Lokal (Fork): + Barcode / EAN unter Kauf.
+  assert.equal(all.length, 20, 'alle Angaben des Gegenstands stehen weiter im Detail');
 });
 
 test('die geteilte Leseansicht zeichnet Gruppen mit Titel und laesst leere ganz weg', async () => {

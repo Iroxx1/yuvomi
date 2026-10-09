@@ -889,8 +889,9 @@ function drawList(list) {
   list.removeAttribute('aria-busy');
   // Die Chipreihen (lokal: Lagerorte, dann Status) sind die ersten Kinder des
   // Ports und ueberleben den Neuaufbau.
-  const chipRows = list.querySelectorAll(':scope > #pantry-location-filters, :scope > #pantry-filters');
-  list.replaceChildren(...chipRows);
+  const chipRow = list.querySelector(':scope > #pantry-filters');
+  const locationRow = list.querySelector(':scope > #pantry-location-filters');
+  list.replaceChildren(...[locationRow, chipRow].filter(Boolean));
   renderBulkBar();
   renderWatch();
 
@@ -2005,8 +2006,10 @@ function openItemModal(mode, item = null) {
     onSave(panel) {
       // Keep focus inside the dialog without opening the mobile keyboard.
       const heading = panel.querySelector('#shared-modal-title');
-      heading.tabIndex = -1;
-      heading.focus({ preventScroll: true });
+      if (heading) {
+        heading.tabIndex = -1;
+        heading.focus?.({ preventScroll: true });
+      }
       panel.querySelector('#pantry-name').value = isEdit ? item.name : '';
 
       const initialBarcode =
