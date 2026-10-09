@@ -30,72 +30,10 @@ const log = createLogger('Pantry');
 const router = express.Router();
 
 
-/**
- * Lokale Erweiterung: optionale Produktfotos.
- *
- * Absichtlich KEINE Yuvomi-Migrationsnummer:
- * lokale Erweiterungen dürfen nicht mit zukünftigen offiziellen
- * schema_migrations kollidieren.
- *
- * Die Prüfung ist idempotent. Eine bestehende Installation behält
- * ihre Spalten; bei einem frischen Custom-Build werden nur fehlende
- * additive Spalten ergänzt.
- */
-function ensureLocalPantryPhotoSchema() {
-  const database = db.get();
-
-  const existing =
-    new Set(
-      database
-        .prepare(
-          'PRAGMA table_info(pantry_items)'
-        )
-        .all()
-        .map(
-          (column) => column.name
-        )
-    );
-
-  const required = [
-    {
-      name: 'photo_key',
-      type: 'TEXT',
-    },
-    {
-      name: 'photo_mime',
-      type: 'TEXT',
-    },
-    {
-      name: 'photo_size',
-      type: 'INTEGER',
-    },
-  ];
-
-  for (
-    const column
-    of required
-  ) {
-    if (
-      existing.has(
-        column.name
-      )
-    ) {
-      continue;
-    }
-
-    database.exec(
-      `ALTER TABLE pantry_items ` +
-      `ADD COLUMN ${column.name} ${column.type}`
-    );
-
-    log.info(
-      `Local pantry photo schema: ` +
-      `added pantry_items.${column.name}`
-    );
-  }
-}
-
-ensureLocalPantryPhotoSchema();
+// Lokale Erweiterung: optionale Produktfotos und EAN. Die Spalten
+// (pantry_items.photo_key/photo_mime/photo_size/barcode) legt
+// ensureLocalSchema() in server/db.js bei jedem init() an - ohne
+// Migrationsnummer, damit sie nie mit Upstream kollidieren.
 
 
 // --------------------------------------------------------

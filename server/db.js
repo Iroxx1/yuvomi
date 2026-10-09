@@ -488,8 +488,12 @@ function init({ plaintextBackup = true } = {}) {
   db.pragma('synchronous = NORMAL');
   db.pragma('temp_store = MEMORY');
 
+  // Lokale Erweiterung: alte Fork-Nummern freigeben, bevor migrate() entscheidet,
+  // was aussteht - sonst gaelte die Upstream-Migration gleicher Nummer als erledigt.
+  releaseLocalMigrationVersions();
   migrate();
   reconcileCriticalSchema();
+  ensureLocalSchema();
 
   // Ältere App auf neuerer Datenbank: nicht starten. Die Gefahr ist nicht,
   // dass diese Version scheitert, sondern was sie zwischendurch schreibt -
@@ -10708,6 +10712,67 @@ function reconcileCriticalSchema(database = db) {
       log.error(`Schema-Reconciliation ${table}.${column} fehlgeschlagen:`, err?.message || err);
     }
   }
+}
+
+// --------------------------------------------------------
+// Lokale Erweiterungen (Fork local/*-custom): Schema ohne Migrationsnummer
+// --------------------------------------------------------
+
+/**
+ * Spalten der lokalen Erweiterungen (Vorrat: EAN und Produktfoto, Inventar:
+ * EAN). BEWUSST KEINE MIGRATIONSNUMMER: jede Nummer, die der Fork belegt,
+ * vergibt Upstream frueher oder spaeter selbst - dann gaelte dessen Migration
+ * auf dieser Datenbank als erledigt und fehlte still. Alle Eintraege sind
+ * additive `ADD COLUMN` (NULL-Default) und damit gefahrlos wiederholbar.
+ */
+const LOCAL_COLUMNS = [
+  { table: 'pantry_items', column: 'photo_key', type: 'TEXT' },
+  { table: 'pantry_items', column: 'photo_mime', type: 'TEXT' },
+  { table: 'pantry_items', column: 'photo_size', type: 'INTEGER' },
+  { table: 'pantry_items', column: 'barcode', type: 'TEXT' },
+  { table: 'inventory_items', column: 'barcode', type: 'TEXT' },
+];
+
+const LOCAL_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_inventory_items_barcode ON inventory_items(barcode)
+     WHERE barcode IS NOT NULL`,
+];
+
+/**
+ * Migrationsnummern, die frühere Fork-Staende selbst verbucht haben. Bis
+ * 2.67-custom stand die Inventar-EAN als Migration 214 in der Liste; Upstream
+ * hat 214 seit 2.68 fuer "Tasks: who did it" (task_completions.done_by_user_id)
+ * vergeben. Geloescht wird nur die Zeile mit GENAU dieser Beschreibung, damit
+ * migrate() die Upstream-214 nachholt; die Spalte selbst bleibt stehen und
+ * gehoert jetzt ensureLocalSchema().
+ */
+const LOCAL_LEGACY_MIGRATIONS = [
+  { version: 214, description: 'Inventory: optional barcode for household products' },
+];
+
+function releaseLocalMigrationVersions(database = db) {
+  const hasTable = database
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
+    .get();
+  if (!hasTable) return;
+  for (const { version, description } of LOCAL_LEGACY_MIGRATIONS) {
+    const result = database
+      .prepare('DELETE FROM schema_migrations WHERE version = ? AND description = ?')
+      .run(version, description);
+    if (result.changes > 0) {
+      log.warn(`Lokale Migration ${version} freigegeben ("${description}"): die Nummer gehoert Upstream, das Schema stellt ensureLocalSchema() sicher.`);
+    }
+  }
+}
+
+function ensureLocalSchema(database = db) {
+  for (const { table, column, type } of LOCAL_COLUMNS) {
+    const columns = database.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.length || columns.some((c) => c.name === column)) continue;
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    log.info(`Lokales Schema: ${table}.${column} angelegt.`);
+  }
+  for (const sql of LOCAL_INDEXES) database.exec(sql);
 }
 
 /**
