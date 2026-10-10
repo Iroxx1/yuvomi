@@ -369,8 +369,10 @@
 
 /* ── Lokale Erweiterung: Ja/Nein-Schalter je Zeile (configure({ rowToggle })) ──
  * Nur der Vorrat nutzt ihn (Lagerort: Barcode-Scanner beim Anlegen). Breit
- * steht er neben dem Namen, schmal (Handy) bricht er als eigene Zeile darunter
- * um, damit der Name nicht auf wenige Zeichen schrumpft. */
+ * steht er neben dem Namen; lange Namen („Schublade Kosmetik") brechen dann um,
+ * statt abgeschnitten zu werden. Schmal (Handy) bleiben neben den vier
+ * 48-px-Aktionen kaum 45 px für den Namen - dort bekommt die Zeile zwei Ebenen:
+ * oben Griff, Zeichen und der volle Name, darunter Schalter und Aktionen. */
 .cat-row__toggle,
 .cat-add-form__toggle {
   display: inline-flex;
@@ -392,17 +394,26 @@
   cursor: pointer;
 }
 
-@media (max-width: 639px) {
-  .cat-row__toggle {
-    order: 10;
-    flex-basis: 100%;
-    padding-inline-start: calc(var(--space-4) + var(--space-6));
-  }
+.cat-row:has(> .cat-row__toggle) > .cat-row__name {
+  white-space: normal;
+  overflow-wrap: break-word;
+  hyphens: auto;
 }
 
-/* Mit Schalter wird es in der Zeile enger: lange Namen („Schublade Kosmetik")
- * brechen um, statt abgeschnitten zu werden. */
-.cat-row:has(.cat-row__toggle) .cat-row__name {
-  white-space: normal;
-  overflow-wrap: anywhere;
+@media (max-width: 639px) {
+  .cat-row:has(> .cat-row__toggle) {
+    display: grid;
+    grid-template-columns: auto auto 1fr auto;
+    grid-template-areas:
+      "handle mark name name"
+      "toggle toggle toggle actions";
+    column-gap: var(--space-2);
+    row-gap: var(--space-1);
+  }
+  .cat-row:has(> .cat-row__toggle) > .cat-row__handle { grid-area: handle; }
+  .cat-row:has(> .cat-row__toggle) > .cat-row__icon,
+  .cat-row:has(> .cat-row__toggle) > .cat-row__mark { grid-area: mark; }
+  .cat-row:has(> .cat-row__toggle) > .cat-row__name { grid-area: name; }
+  .cat-row:has(> .cat-row__toggle) > .cat-row__toggle { grid-area: toggle; }
+  .cat-row:has(> .cat-row__toggle) > .cat-row__actions { grid-area: actions; }
 }
