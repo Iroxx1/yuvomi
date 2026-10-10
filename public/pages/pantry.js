@@ -2240,7 +2240,8 @@ function addPantryTag(panel, value) {
 
 function renderPantryTags(panel) {
   const box = panel.querySelector('#pantry-tags');
-  if (!box) return;
+  // Ohne echtes Element (Mini-DOM der Upstream-Dialogtests) nichts zeichnen.
+  if (typeof box?.replaceChildren !== 'function') return;
   if (!panel._pantryTags.length) {
     const empty = document.createElement('em');
     empty.className = 'pantry-tags__empty';
