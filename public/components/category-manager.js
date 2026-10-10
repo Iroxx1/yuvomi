@@ -126,6 +126,11 @@ class CategoryManagerElement extends HTMLElement {
     this._addScopeLabelKey = 'noteCategories.scopeLabel';
     this._addScopeHelpKey = '';
     this._addMaxLength = 60;
+    // Lokale Erweiterung, OPT-IN: ein Ja/Nein-Schalter je Zeile und im
+    // Anlegen-Formular ({ field, label, hint }). Nur der Vorrat nutzt ihn
+    // (Lagerort: Barcode-Scanner beim Anlegen); ohne Option bleibt alles wie
+    // bei Upstream.
+    this._rowToggle = null;
     this._cats = [];
     this._sortables = [];
     this._onClick = this._onClick.bind(this);
@@ -152,6 +157,9 @@ class CategoryManagerElement extends HTMLElement {
     if (opts.deleteConfirmKey) this._deleteConfirmKey = opts.deleteConfirmKey;
     if (opts.deleteDetailKey) this._deleteDetailKey = opts.deleteDetailKey;
     if (opts.subDeleteDetailKey) this._subDeleteDetailKey = opts.subDeleteDetailKey;
+    this._rowToggle = opts.rowToggle && typeof opts.rowToggle.field === 'string' && opts.rowToggle.field
+      ? opts.rowToggle
+      : null;
     this._renderShell();
     this._load();
   }
@@ -230,6 +238,7 @@ class CategoryManagerElement extends HTMLElement {
           <input class="form-input" type="text" maxlength="${this._addMaxLength}"
                  placeholder="${esc(t(this._addPlaceholderKey))}"
                  aria-label="${esc(t(this._addPlaceholderKey))}" />
+          ${this._addToggleHtml()}
           <button type="submit" class="btn btn--primary">${esc(t(g.addLabelKey || 'common.add'))}</button>
         </form>`}
       </section>`;
@@ -469,6 +478,52 @@ class CategoryManagerElement extends HTMLElement {
     });
   }
 
+  /** Ja/Nein-Schalter einer Zeile (nur mit `rowToggle`). Fehlender Wert = ja. */
+  _rowToggleHtml(cat) {
+    const toggle = this._rowToggle;
+    if (!toggle) return '';
+    const on = Number(cat?.[toggle.field] ?? 1) !== 0;
+    const name = this._labelResolver(cat);
+    return `
+      <label class="cat-row__toggle"${toggle.hint ? ` title="${esc(toggle.hint)}"` : ''}>
+        <input type="checkbox" data-action="toggle" ${on ? 'checked' : ''}
+               aria-label="${esc(`${toggle.label}: ${name}`)}" />
+        <span>${esc(toggle.label)}</span>
+      </label>`;
+  }
+
+  /** Derselbe Schalter im Anlegen-Formular, vorausgewählt auf ja. */
+  _addToggleHtml() {
+    const toggle = this._rowToggle;
+    if (!toggle) return '';
+    return `
+      <label class="cat-add-form__toggle"${toggle.hint ? ` title="${esc(toggle.hint)}"` : ''}>
+        <input type="checkbox" name="row-toggle" checked />
+        <span>${esc(toggle.label)}</span>
+      </label>`;
+  }
+
+  async _setToggle(key, input) {
+    const toggle = this._rowToggle;
+    const cat = this._cats.find((c) => this._keyOf(c) === key);
+    if (!toggle || !cat) return;
+    const value = input.checked ? 1 : 0;
+    input.disabled = true;
+    try {
+      // NUR das Feld schicken, wie bei der Farbe: der Name bleibt unberührt.
+      const res = await api.put(`${this._basePath}/${encodeURIComponent(key)}`, { [toggle.field]: value });
+      const idx = this._cats.findIndex((c) => this._keyOf(c) === key);
+      if (idx >= 0) this._cats[idx] = res.data;
+      this._announce(`${toggle.label}: ${value ? 'ja' : 'nein'}`);
+      this._notifyChanged();
+    } catch (err) {
+      input.checked = !value;
+      window.yuvomi?.showToast(this._errMsg(err), 'danger');
+    } finally {
+      input.disabled = false;
+    }
+  }
+
   _rowHtml(cat, group, isFirst, isLast) {
     return `
       <li class="cat-row" data-key="${esc(this._keyOf(cat))}">
@@ -478,6 +533,7 @@ class CategoryManagerElement extends HTMLElement {
         ${this._markHtml(cat)}
         <button type="button" class="cat-row__name" data-action="rename"
               title="${esc(t('category.renameHint'))}">${esc(this._labelResolver(cat))}</button>
+        ${this._rowToggleHtml(cat)}
         <div class="cat-row__actions row-actions">
           ${this._rowActionsHtml(this._labelResolver(cat), { isFirst, isLast })}
         </div>
@@ -650,6 +706,8 @@ class CategoryManagerElement extends HTMLElement {
     try {
       const body = { name };
       if (group) body[this._groupField] = group;
+      const toggleInput = this._rowToggle ? form.querySelector('[name="row-toggle"]') : null;
+      if (toggleInput) body[this._rowToggle.field] = toggleInput.checked ? 1 : 0;
       const res = await api.post(this._basePath, body);
       this._cats.push(res.data);
       this._renderGroup(group ?? '');
@@ -680,6 +738,7 @@ class CategoryManagerElement extends HTMLElement {
     if (!row) return;
     const key = row.dataset.key;
     if (action === 'color') { this._toggleColors(row); return; }
+    if (action === 'toggle') { await this._setToggle(key, target); return; }
     if (action === 'rename') await this._rename(key);
     else if (action === 'up') await this._move(key, -1);
     else if (action === 'down') await this._move(key, 1);

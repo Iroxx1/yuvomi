@@ -10719,17 +10719,22 @@ function reconcileCriticalSchema(database = db) {
 // --------------------------------------------------------
 
 /**
- * Spalten der lokalen Erweiterungen (Vorrat: EAN und Produktfoto, Inventar:
- * EAN). BEWUSST KEINE MIGRATIONSNUMMER: jede Nummer, die der Fork belegt,
- * vergibt Upstream frueher oder spaeter selbst - dann gaelte dessen Migration
- * auf dieser Datenbank als erledigt und fehlte still. Alle Eintraege sind
- * additive `ADD COLUMN` (NULL-Default) und damit gefahrlos wiederholbar.
+ * Spalten der lokalen Erweiterungen (Vorrat: EAN, Produktfoto und Tags,
+ * Lagerort: Barcode-Scanner beim Anlegen, Inventar: EAN). BEWUSST KEINE
+ * MIGRATIONSNUMMER: jede Nummer, die der Fork belegt, vergibt Upstream frueher
+ * oder spaeter selbst - dann gaelte dessen Migration auf dieser Datenbank als
+ * erledigt und fehlte still. Alle Eintraege sind additive `ADD COLUMN` (NULL-
+ * oder fester Default) und damit gefahrlos wiederholbar.
  */
 const LOCAL_COLUMNS = [
   { table: 'pantry_items', column: 'photo_key', type: 'TEXT' },
   { table: 'pantry_items', column: 'photo_mime', type: 'TEXT' },
   { table: 'pantry_items', column: 'photo_size', type: 'INTEGER' },
   { table: 'pantry_items', column: 'barcode', type: 'TEXT' },
+  // JSON-Array der Tags, z. B. ["Backen","Frühstück"]; NULL = keine Tags.
+  { table: 'pantry_items', column: 'tags', type: 'TEXT' },
+  // 1 = beim Anlegen in diesem Ort startet der Barcode-Scanner, 0 = nicht.
+  { table: 'pantry_locations', column: 'barcode_scan', type: 'INTEGER NOT NULL DEFAULT 1' },
   { table: 'inventory_items', column: 'barcode', type: 'TEXT' },
 ];
 

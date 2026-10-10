@@ -254,6 +254,7 @@ function visibleItems() {
     if (!q) return true;
     return item.name?.toLowerCase().includes(q)
       || item.notes?.toLowerCase().includes(q)
+      || (Array.isArray(item.tags) && item.tags.some((tag) => String(tag).toLowerCase().includes(q)))
       || (item.location_name && locationLabel(item.location_name).toLowerCase().includes(q));
   });
 }
@@ -1749,6 +1750,7 @@ function openItemModal(mode, item = null) {
   if (isEdit) item = withIntent(item);
   const locations = state.locations;
   const categories = state.categories;
+  const presetLocation = isEdit ? null : selectedFilterLocation();
 
   const unitOptions = PANTRY_UNITS
     .map((unit) => `<option value="${esc(unit)}">${esc(unitLabel(unit))}</option>`)
@@ -1835,6 +1837,20 @@ function openItemModal(mode, item = null) {
         <label class="form-label" for="pantry-name">${esc(t('common.nameLabel'))}${REQUIRED_MARK}</label>
         <input id="pantry-name" class="form-input" type="text" required
                placeholder="${esc(t('pantry.namePlaceholder'))}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="pantry-tag-input">Tags</label>
+        <div id="pantry-tags" class="pantry-tags" aria-live="polite"></div>
+        <input
+          id="pantry-tag-input"
+          class="form-input"
+          type="text"
+          autocomplete="off"
+          enterkeyhint="enter"
+          maxlength="${PANTRY_TAG_MAX_LENGTH}"
+          placeholder="Tag eingeben und Enter drücken"
+        >
       </div>
 
       <div class="form-group">
@@ -2029,12 +2045,19 @@ function openItemModal(mode, item = null) {
 
       panel.querySelector('#pantry-quantity').value = isEdit ? String(item.quantity) : '1';
       panel.querySelector('#pantry-unit').value = isEdit ? item.unit : 'pcs';
-      panel.querySelector('#pantry-location').value = isEdit && item.location_id ? String(item.location_id) : '';
+      // Beim Anlegen den Lagerort des gewählten Chips vorbelegen, sonst
+      // „Ohne Lagerort".
+      panel.querySelector('#pantry-location').value = isEdit
+        ? (item.location_id ? String(item.location_id) : '')
+        : (presetLocation ? String(presetLocation.id) : '');
       panel.querySelector('#pantry-category').value = isEdit
         ? item.category
         : (categories.find((c) => c.name === DEFAULT_CATEGORY_NAME)?.name ?? categories[0]?.name ?? DEFAULT_CATEGORY_NAME);
       panel.querySelector('#pantry-min').value = isEdit && item.min_quantity != null ? String(item.min_quantity) : '';
       panel.querySelector('#pantry-notes').value = isEdit && item.notes ? item.notes : '';
+
+      panel._pantryTags = isEdit && Array.isArray(item.tags) ? [...item.tags] : [];
+      wirePantryTags(panel);
 
       panel._pantryPhotoData = null;
       panel._pantryPhotoRemove = false;
@@ -2168,8 +2191,94 @@ function openItemModal(mode, item = null) {
 
       wireBlurValidation(panel);
       if (window.lucide) window.lucide.createIcons({ el: panel });
-      if (!isEdit) void startPantryBarcodeScanner(panel);
+      // Ohne gewählten Lagerort wie bisher scannen; ein gewählter Ort mit
+      // Barcode = nein (z. B. Kosmetik) öffnet den Dialog ohne Kamera.
+      if (!isEdit && autoScanFor(presetLocation)) void startPantryBarcodeScanner(panel);
     },
+  });
+}
+
+/**
+ * Lagerort des gewählten Filter-Chips (nur ein echter Ort, nicht „Alle" oder
+ * „Ohne Lagerort").
+ */
+function selectedFilterLocation() {
+  const id = state.locationFilter;
+  if (id === 'all' || id === 'none' || id == null) return null;
+  return state.locations.find((loc) => String(loc.id) === String(id)) ?? null;
+}
+
+/** Startet beim Anlegen der Scanner? Ohne Ort ja, sonst je nach Schalter. */
+function autoScanFor(location) {
+  if (!location) return true;
+  return Number(location.barcode_scan ?? 1) !== 0;
+}
+
+const PANTRY_TAG_MAX_LENGTH = 40;
+const PANTRY_TAG_MAX_COUNT = 20;
+
+function normalizePantryTag(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, PANTRY_TAG_MAX_LENGTH);
+}
+
+/**
+ * Tag ans Panel hängen; doppelte (ohne Groß-/Kleinschreibung) und leere
+ * werden still verworfen. @returns {boolean} hinzugefügt?
+ */
+function addPantryTag(panel, value) {
+  const tag = normalizePantryTag(value);
+  if (!tag) return false;
+  const key = tag.toLocaleLowerCase('de');
+  if (panel._pantryTags.some((existing) => existing.toLocaleLowerCase('de') === key)) return false;
+  if (panel._pantryTags.length >= PANTRY_TAG_MAX_COUNT) {
+    window.yuvomi?.showToast(`Höchstens ${PANTRY_TAG_MAX_COUNT} Tags pro Artikel.`, 'danger');
+    return false;
+  }
+  panel._pantryTags.push(tag);
+  return true;
+}
+
+function renderPantryTags(panel) {
+  const box = panel.querySelector('#pantry-tags');
+  if (!box) return;
+  if (!panel._pantryTags.length) {
+    box.innerHTML = '<em class="pantry-tags__empty">kein Tag</em>';
+    return;
+  }
+  box.innerHTML = panel._pantryTags.map((tag, index) => `
+    <span class="pantry-tag">
+      <span class="pantry-tag__label">${esc(tag)}</span>
+      <button type="button" class="pantry-tag__remove" data-tag-index="${index}"
+              aria-label="${esc(`Tag „${tag}“ entfernen`)}" title="Tag entfernen">
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+    </span>`).join('');
+  if (window.lucide) window.lucide.createIcons({ el: box });
+}
+
+function wirePantryTags(panel) {
+  const box = panel.querySelector('#pantry-tags');
+  const input = panel.querySelector('#pantry-tag-input');
+  renderPantryTags(panel);
+
+  input?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.keyCode !== 13) return;
+    // Enter speichert hier den Tag, nicht den Dialog.
+    event.preventDefault();
+    event.stopPropagation();
+    addPantryTag(panel, input.value);
+    input.value = '';
+    renderPantryTags(panel);
+  });
+
+  box?.addEventListener('click', (event) => {
+    const btn = event.target.closest?.('[data-tag-index]');
+    if (!btn) return;
+    const index = Number(btn.dataset.tagIndex);
+    if (!Number.isInteger(index)) return;
+    panel._pantryTags.splice(index, 1);
+    renderPantryTags(panel);
+    input?.focus({ preventScroll: true });
   });
 }
 
@@ -2936,6 +3045,13 @@ async function saveItem(panel, mode, item) {
   }
 
   const minRaw = panel.querySelector('#pantry-min').value.trim();
+  // Ein getippter, aber nicht mit Enter bestätigter Tag geht beim Speichern
+  // nicht verloren.
+  const tagInput = panel.querySelector('#pantry-tag-input');
+  if (tagInput?.value.trim() && addPantryTag(panel, tagInput.value)) {
+    tagInput.value = '';
+    renderPantryTags(panel);
+  }
   const payload = {
     name,
     quantity: normalizePantryQuantity(panel.querySelector('#pantry-quantity').value, { fallback: 1 }),
@@ -2950,6 +3066,7 @@ async function saveItem(panel, mode, item) {
       ''
     ).trim() || null,
     notes: panel.querySelector('#pantry-notes').value.trim() || null,
+    tags: Array.isArray(panel._pantryTags) ? [...panel._pantryTags] : [],
 
     // Foto ist unabhängig vom Barcode optional.
     photo_data:
@@ -3071,6 +3188,12 @@ async function openLocationManager() {
         // laesst die Artikel unzugeordnet zurueck (`orphaned` in der Antwort).
         deleteDetailKey: 'pantry.locationDeleteConfirmDetail',
         groups: [{ key: '', labelKey: '', addLabelKey: 'common.add' }],
+        // Lokal: je Ort, ob beim Anlegen eines Artikels der Scanner startet.
+        rowToggle: {
+          field: 'barcode_scan',
+          label: 'Barcode',
+          hint: 'Barcode-Scanner startet beim Anlegen eines Artikels in diesem Lagerort',
+        },
       });
     },
     // Bewusst KEIN onClose, das den Listener abmeldet - es liefe vor dem
@@ -3121,4 +3244,16 @@ export const __test = {
   itemReadHtml,
   emptyStateEl,
   openLocationManager,
+};
+
+// Testfläche der lokalen Erweiterungen (Tags, Lagerort-Vorauswahl,
+// Barcode-Schalter) - getrennt von `__test`, damit Upstream-Merges dort nicht
+// kollidieren (test/test-pantry-local-ui.js).
+export const __localTest = {
+  state,
+  visibleItems,
+  addPantryTag,
+  normalizePantryTag,
+  selectedFilterLocation,
+  autoScanFor,
 };

@@ -366,3 +366,36 @@
   .cat-add-form__scope .form-input,
   .cat-add-form--unified > .btn { width: 100%; }
 }
+
+/* ── Lokale Erweiterung: Ja/Nein-Schalter je Zeile (configure({ rowToggle })) ──
+ * Nur der Vorrat nutzt ihn (Lagerort: Barcode-Scanner beim Anlegen). Breit
+ * steht er neben dem Namen, schmal (Handy) bricht er als eigene Zeile darunter
+ * um, damit der Name nicht auf wenige Zeichen schrumpft. */
+.cat-row__toggle,
+.cat-add-form__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.cat-row__toggle input,
+.cat-add-form__toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+@media (max-width: 639px) {
+  .cat-row__toggle {
+    order: 10;
+    flex-basis: 100%;
+    padding-inline-start: calc(var(--space-4) + var(--space-6));
+  }
+}

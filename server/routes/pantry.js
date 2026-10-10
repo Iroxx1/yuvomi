@@ -30,10 +30,66 @@ const log = createLogger('Pantry');
 const router = express.Router();
 
 
-// Lokale Erweiterung: optionale Produktfotos und EAN. Die Spalten
-// (pantry_items.photo_key/photo_mime/photo_size/barcode) legt
-// ensureLocalSchema() in server/db.js bei jedem init() an - ohne
-// Migrationsnummer, damit sie nie mit Upstream kollidieren.
+// Lokale Erweiterung: optionale Produktfotos, EAN und Tags, je Lagerort der
+// Schalter für den Barcode-Scanner. Die Spalten
+// (pantry_items.photo_key/photo_mime/photo_size/barcode/tags,
+// pantry_locations.barcode_scan) legt ensureLocalSchema() in server/db.js bei
+// jedem init() an - ohne Migrationsnummer, damit sie nie mit Upstream
+// kollidieren.
+
+const MAX_TAGS = 20;
+const MAX_TAG_LENGTH = 40;
+
+/**
+ * Tags aus dem Request prüfen und bereinigen: Leerraum zusammenziehen, leere
+ * und doppelte (ohne Groß-/Kleinschreibung) verwerfen, die erste Schreibweise
+ * gewinnt.
+ * @returns {{ value?: string|null, error?: string }} value = JSON oder null
+ */
+function parseTags(raw) {
+  if (raw === null || raw === '') return { value: null };
+  if (!Array.isArray(raw)) return { error: 'Tags müssen eine Liste sein.' };
+  const tags = [];
+  const seen = new Set();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') return { error: 'Tags müssen Text sein.' };
+    const tag = entry.replace(/\s+/g, ' ').trim();
+    if (!tag) continue;
+    if (tag.length > MAX_TAG_LENGTH) {
+      return { error: `Ein Tag darf höchstens ${MAX_TAG_LENGTH} Zeichen haben.` };
+    }
+    const key = tag.toLocaleLowerCase('de');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  if (tags.length > MAX_TAGS) return { error: `Höchstens ${MAX_TAGS} Tags pro Artikel.` };
+  return { value: tags.length ? JSON.stringify(tags) : null };
+}
+
+/** Gespeichertes JSON als Liste ausliefern - kaputte Werte werden zu []. */
+function tagList(stored) {
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed.filter((t) => typeof t === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Artikelzeile für die API: `tags` als Liste statt als JSON-Text. */
+function itemOut(row) {
+  return row ? { ...row, tags: tagList(row.tags) } : row;
+}
+
+/** Schalter Barcode ja/nein aus dem Request; undefined = nicht mitgeschickt. */
+function parseBarcodeScan(raw) {
+  if (raw === undefined) return { value: undefined };
+  if (raw === true || raw === 1 || raw === '1') return { value: 1 };
+  if (raw === false || raw === 0 || raw === '0') return { value: 0 };
+  return { error: 'barcode_scan muss ja oder nein sein.' };
+}
 
 
 // --------------------------------------------------------
@@ -285,6 +341,14 @@ function validateItemFields(body, { partial = false, current = null } = {}) {
     values.notes = vNotes.value;
   }
 
+  // Tags nur, wenn mitgeschickt: ein PUT ohne `tags` (ältere Clients, Skripte)
+  // behält die vorhandenen, genau wie bei der EAN.
+  if (body.tags !== undefined) {
+    const vTags = parseTags(body.tags);
+    results.push(vTags);
+    values.tags = vTags.value ?? null;
+  }
+
   return { values, errors: collectErrors(results) };
 }
 
@@ -527,7 +591,7 @@ router.get('/locations', (_req, res) => {
 
 // --------------------------------------------------------
 // POST /api/v1/pantry/locations
-// Body: { name, icon? }
+// Body: { name, icon?, barcode_scan? }  (barcode_scan lokal, Default 1)
 // Response: { data: PantryLocation }
 // --------------------------------------------------------
 router.post('/locations', (req, res) => {
@@ -543,13 +607,16 @@ router.post('/locations', (req, res) => {
     const vIcon = str(req.body.icon, 'Icon', { max: MAX_SHORT, required: false });
     if (vIcon.error) return res.status(400).json({ error: vIcon.error, code: 400 });
 
+    const vScan = parseBarcodeScan(req.body.barcode_scan);
+    if (vScan.error) return res.status(400).json({ error: vScan.error, code: 400 });
+
     const maxOrder = db.get()
       .prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM pantry_locations')
       .get().m;
 
     const result = db.get()
-      .prepare('INSERT INTO pantry_locations (name, icon, sort_order) VALUES (?, ?, ?)')
-      .run(vName.value, vIcon.value ?? 'package', maxOrder + 1);
+      .prepare('INSERT INTO pantry_locations (name, icon, sort_order, barcode_scan) VALUES (?, ?, ?, ?)')
+      .run(vName.value, vIcon.value ?? 'package', maxOrder + 1, vScan.value ?? 1);
 
     res.status(201).json({
       data: db.get().prepare('SELECT * FROM pantry_locations WHERE id = ?').get(result.lastInsertRowid),
@@ -585,7 +652,9 @@ router.patch('/locations/reorder', (req, res) => {
 
 // --------------------------------------------------------
 // PUT /api/v1/pantry/locations/:locId
-// Body: { name?, icon? }
+// Body: { name?, icon?, barcode_scan? }
+// Nur `barcode_scan` (Schalter in der Lagerort-Verwaltung) lässt den Namen
+// stehen; ohne beides bleibt der Name Pflicht wie bisher.
 // Response: { data: PantryLocation }
 // --------------------------------------------------------
 router.put('/locations/:locId', (req, res) => {
@@ -596,9 +665,13 @@ router.put('/locations/:locId', (req, res) => {
     const loc = db.get().prepare('SELECT * FROM pantry_locations WHERE id = ?').get(vId.value);
     if (!loc) return res.status(404).json({ error: 'Storage location not found.', code: 404 });
 
-    const vName = str(req.body.name, 'Name', { max: MAX_SHORT });
+    const vScan = parseBarcodeScan(req.body.barcode_scan);
+    const keepName = req.body.name === undefined && vScan.value !== undefined;
+    const vName = keepName
+      ? { value: loc.name, error: null }
+      : str(req.body.name, 'Name', { max: MAX_SHORT });
     const vIcon = str(req.body.icon, 'Icon', { max: MAX_SHORT, required: false });
-    const errors = collectErrors([vName, vIcon]);
+    const errors = collectErrors([vName, vIcon, vScan]);
     if (errors.length) return res.status(400).json({ error: errors.join(' '), code: 400 });
 
     const conflict = db.get()
@@ -607,8 +680,8 @@ router.put('/locations/:locId', (req, res) => {
     if (conflict) return res.status(409).json({ error: 'Storage location already exists.', code: 409 });
 
     db.get()
-      .prepare('UPDATE pantry_locations SET name = ?, icon = ? WHERE id = ?')
-      .run(vName.value, vIcon.value ?? loc.icon, loc.id);
+      .prepare('UPDATE pantry_locations SET name = ?, icon = ?, barcode_scan = ? WHERE id = ?')
+      .run(vName.value, vIcon.value ?? loc.icon, vScan.value ?? loc.barcode_scan ?? 1, loc.id);
 
     res.json({ data: db.get().prepare('SELECT * FROM pantry_locations WHERE id = ?').get(loc.id) });
   } catch (err) {
@@ -774,7 +847,7 @@ router.post('/import-shopping', (req, res) => {
 // --------------------------------------------------------
 router.get('/', (_req, res) => {
   try {
-    res.json({ data: loadItems(), locations: loadLocations(), categories: loadCategories() });
+    res.json({ data: loadItems().map(itemOut), locations: loadLocations(), categories: loadCategories() });
   } catch (err) {
     log.error('GET / error:', err);
     res.status(500).json({ error: 'Internal server error.', code: 500 });
@@ -847,9 +920,10 @@ router.post('/', async (req, res) => {
             created_by,
             photo_key,
             photo_mime,
-            photo_size
+            photo_size,
+            tags
           )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         values.name,
         values.quantity,
@@ -863,14 +937,15 @@ router.post('/', async (req, res) => {
         req.authUserId || req.session.userId,
         newPhoto?.key ?? null,
         newPhoto?.mime ?? null,
-        newPhoto?.size ?? null
+        newPhoto?.size ?? null,
+        values.tags ?? null
       );
       const item = getItem(result.lastInsertRowid);
       syncReminder(item);
       return item;
     })();
 
-    res.status(201).json({ data: created });
+    res.status(201).json({ data: itemOut(created) });
   } catch (err) {
     if (newPhoto?.key) {
       await removePantryPhoto(
@@ -981,7 +1056,8 @@ router.put('/:itemId', async (req, res) => {
           notes = ?,
           photo_key = ?,
           photo_mime = ?,
-          photo_size = ?
+          photo_size = ?,
+          tags = ?
         WHERE id = ?
       `).run(
         values.name,
@@ -996,6 +1072,7 @@ router.put('/:itemId', async (req, res) => {
         nextPhotoKey,
         nextPhotoMime,
         nextPhotoSize,
+        values.tags !== undefined ? values.tags : (item.tags ?? null),
         item.id
       );
       const fresh = getItem(item.id);
@@ -1012,7 +1089,7 @@ router.put('/:itemId', async (req, res) => {
       );
     }
 
-    res.json({ data: updated });
+    res.json({ data: itemOut(updated) });
   } catch (err) {
     if (newPhoto?.key) {
       await removePantryPhoto(
@@ -1045,7 +1122,7 @@ router.patch('/:itemId', (req, res) => {
     // Die Spaltennamen stammen aus dem festen Schlüsselvorrat von
     // validateItemFields, nicht aus dem Request-Body - kein Injection-Pfad.
     const fields = Object.keys(values);
-    if (!fields.length) return res.json({ data: item });
+    if (!fields.length) return res.json({ data: itemOut(item) });
 
     const updated = db.get().transaction(() => {
       db.get().prepare(`
@@ -1059,7 +1136,7 @@ router.patch('/:itemId', (req, res) => {
       return fresh;
     })();
 
-    res.json({ data: updated });
+    res.json({ data: itemOut(updated) });
   } catch (err) {
     log.error('PATCH /:itemId error:', err);
     res.status(500).json({ error: 'Internal server error.', code: 500 });
