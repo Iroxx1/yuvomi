@@ -399,3 +399,10 @@
     padding-inline-start: calc(var(--space-4) + var(--space-6));
   }
 }
+
+/* Mit Schalter wird es in der Zeile enger: lange Namen („Schublade Kosmetik")
+ * brechen um, statt abgeschnitten zu werden. */
+.cat-row:has(.cat-row__toggle) .cat-row__name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

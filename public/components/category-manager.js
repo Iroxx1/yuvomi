@@ -486,19 +486,25 @@ class CategoryManagerElement extends HTMLElement {
     const name = this._labelResolver(cat);
     return `
       <label class="cat-row__toggle"${toggle.hint ? ` title="${esc(toggle.hint)}"` : ''}>
-        <input type="checkbox" data-action="toggle" ${on ? 'checked' : ''}
+        <input type="checkbox" data-action="toggle" data-dirty-ignore ${on ? 'checked' : ''}
                aria-label="${esc(`${toggle.label}: ${name}`)}" />
         <span>${esc(toggle.label)}</span>
       </label>`;
   }
 
-  /** Derselbe Schalter im Anlegen-Formular, vorausgewählt auf ja. */
+  /**
+   * Derselbe Schalter im Anlegen-Formular, vorausgewählt auf ja.
+   * `data-dirty-ignore` hier wie in der Zeile: die Zeilen-Haken speichern
+   * sofort, und ein Haken ohne getippten Namen ist nichts Ungespeichertes -
+   * sonst fragte das Modal beim Schliessen „Änderungen verwerfen?".
+   */
   _addToggleHtml() {
     const toggle = this._rowToggle;
     if (!toggle) return '';
     return `
       <label class="cat-add-form__toggle"${toggle.hint ? ` title="${esc(toggle.hint)}"` : ''}>
-        <input type="checkbox" name="row-toggle" checked />
+        <input type="checkbox" name="row-toggle" data-dirty-ignore checked
+               aria-label="${esc(toggle.label)}" />
         <span>${esc(toggle.label)}</span>
       </label>`;
   }

@@ -1842,6 +1842,7 @@ function openItemModal(mode, item = null) {
       <div class="form-group">
         <label class="form-label" for="pantry-tag-input">Tags</label>
         <div id="pantry-tags" class="pantry-tags" aria-live="polite"></div>
+        <input id="pantry-tags-value" type="hidden">
         <input
           id="pantry-tag-input"
           class="form-input"
@@ -2239,6 +2240,10 @@ function addPantryTag(panel, value) {
 }
 
 function renderPantryTags(panel) {
+  // Die Chips sind keine Formularfelder: das versteckte Spiegelfeld lässt den
+  // Verwerfen-Wächter des Modals geänderte Tags als ungespeichert erkennen.
+  const mirror = panel.querySelector('#pantry-tags-value');
+  if (mirror) mirror.value = JSON.stringify(panel._pantryTags);
   const box = panel.querySelector('#pantry-tags');
   // Ohne echtes Element (Mini-DOM der Upstream-Dialogtests) nichts zeichnen.
   if (typeof box?.replaceChildren !== 'function') return;
