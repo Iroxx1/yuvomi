@@ -1881,7 +1881,7 @@ function openItemModal(mode, item = null) {
               width:100%;
               max-height:320px;
               object-fit:contain;
-              display:block;
+              display:none;
             "
           >
 
