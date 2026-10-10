@@ -2242,17 +2242,31 @@ function renderPantryTags(panel) {
   const box = panel.querySelector('#pantry-tags');
   if (!box) return;
   if (!panel._pantryTags.length) {
-    box.innerHTML = '<em class="pantry-tags__empty">kein Tag</em>';
+    const empty = document.createElement('em');
+    empty.className = 'pantry-tags__empty';
+    empty.textContent = 'kein Tag';
+    box.replaceChildren(empty);
     return;
   }
-  box.innerHTML = panel._pantryTags.map((tag, index) => `
-    <span class="pantry-tag">
-      <span class="pantry-tag__label">${esc(tag)}</span>
-      <button type="button" class="pantry-tag__remove" data-tag-index="${index}"
-              aria-label="${esc(`Tag „${tag}“ entfernen`)}" title="Tag entfernen">
-        <i data-lucide="x" aria-hidden="true"></i>
-      </button>
-    </span>`).join('');
+  box.replaceChildren(...panel._pantryTags.map((tag, index) => {
+    const chip = document.createElement('span');
+    chip.className = 'pantry-tag';
+    const label = document.createElement('span');
+    label.className = 'pantry-tag__label';
+    label.textContent = tag;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'pantry-tag__remove';
+    remove.dataset.tagIndex = String(index);
+    remove.setAttribute('aria-label', `Tag „${tag}“ entfernen`);
+    remove.title = 'Tag entfernen';
+    const icon = document.createElement('i');
+    icon.dataset.lucide = 'x';
+    icon.setAttribute('aria-hidden', 'true');
+    remove.append(icon);
+    chip.append(label, remove);
+    return chip;
+  }));
   if (window.lucide) window.lucide.createIcons({ el: box });
 }
 

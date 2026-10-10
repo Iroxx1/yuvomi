@@ -586,6 +586,7 @@
 .pantry-tag__remove:hover,
 .pantry-tag__remove:focus-visible {
   background: var(--color-danger-light);
+  color: var(--color-danger-ink);
 }
 
 .pantry-tag__remove svg {
