@@ -379,7 +379,8 @@ app.get('/api/v1/version', (req, res) => {
 // Seitengrund (--color-bg dunkel, wie der dunkle theme-color-Meta).
 // Bewusst als vorgeschaltete Middleware statt im Routen-Literal darunter: die
 // Upstream-Route und test/test-pwa-manifest.js bleiben unverändert. `app.use`
-// statt `app.get`: der Test sucht das erste `app.get('/manifest.webmanifest'`.
+// statt eines zweiten GET-Handlers: der Test liest die ERSTE GET-Registrierung
+// dieses Pfads als Text aus (den Pfad hier also auch nicht im Wortlaut zitieren).
 const LOCAL_MANIFEST_COLORS = { theme_color: '#191816', background_color: '#191816' };
 app.use('/manifest.webmanifest', (_req, res, next) => {
   const sendJson = res.json.bind(res);
