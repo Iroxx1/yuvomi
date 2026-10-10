@@ -371,6 +371,21 @@ app.get('/api/v1/version', (req, res) => {
   return requireAuth(req, res, () => res.json(buildVersionPayload(true)));
 });
 
+// Lokale Anpassung (10.10.2026): dunkle Manifest-Farben. Die installierte
+// Android-App (WebAPK) färbt die untere Systemleiste mit dem `theme_color` des
+// Manifests, nicht mit dem `<meta name="theme-color">` der Seite - bei Upstreams
+// hellem #F5F3ED stand unter der dunklen App ein heller Streifen. Alle Nutzer
+// dieses Haushalts verwenden das dunkle Design, also gilt hier der dunkle
+// Seitengrund (--color-bg dunkel, wie der dunkle theme-color-Meta).
+// Bewusst als vorgeschaltete Middleware statt im Routen-Literal darunter: die
+// Upstream-Route und test/test-pwa-manifest.js bleiben unverändert.
+const LOCAL_MANIFEST_COLORS = { theme_color: '#191816', background_color: '#191816' };
+app.get('/manifest.webmanifest', (_req, res, next) => {
+  const sendJson = res.json.bind(res);
+  res.json = (body) => sendJson({ ...body, ...LOCAL_MANIFEST_COLORS });
+  next();
+});
+
 app.get('/manifest.webmanifest', apiLimiter, (req, res) => {
   let appName = DEFAULT_APP_NAME;
   try {
