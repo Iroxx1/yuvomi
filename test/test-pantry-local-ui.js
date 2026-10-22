@@ -73,6 +73,30 @@ test('Lagerort-Vorauswahl: nur ein echter Ort aus dem Chip, nicht „Alle"/„Oh
   assert.equal(L.selectedFilterLocation(), null);
 });
 
+test('Scan-Abgleich: Hinweis aufs Ziel, Platzhalter als Knöpfe, gemerkte vorgewählt', () => {
+  const match = {
+    target: { id: 7, name: 'Rucola <LIDL>', quantity: 125, unit: 'g', location_name: 'Kühlschrank' },
+    placeholders: [
+      { id: 9, name: 'Rucola', quantity: 1, unit: 'pcs', location_name: 'Sonstiges', alias: true },
+      { id: 11, name: 'Salat', quantity: 0, unit: 'pcs', alias: false },
+    ],
+  };
+  const ids = new Set([9]);
+  const html = L.pantryScanMatchHtml(match, ids);
+  assert.match(html, /Schon im Vorrat: <strong>Rucola &lt;LIDL&gt;<\/strong>/);
+  assert.match(html, /data-replace-id="9" aria-pressed="true"/);
+  assert.match(html, /data-replace-id="11" aria-pressed="false"/);
+  assert.match(html, /gemerkt/);
+
+  const panel = { _pantryReplaceIds: ids };
+  L.togglePantryReplace(panel, 9);
+  L.togglePantryReplace(panel, 11);
+  assert.deepEqual([...panel._pantryReplaceIds], [11]);
+
+  assert.equal(L.pantryScanMatchHtml({ target: null, placeholders: [] }, new Set()), '');
+  assert.equal(L.pantryScanMatchHtml(null, null), '');
+});
+
 test('Scanner beim Anlegen: ohne Ort ja, Ort mit Barcode = ja ja, = nein nein', () => {
   assert.equal(L.autoScanFor(null), true);
   assert.equal(L.autoScanFor({ id: 1, barcode_scan: 1 }), true);

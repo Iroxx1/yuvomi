@@ -1830,6 +1830,8 @@ function openItemModal(mode, item = null) {
         >
           Barcode scannen oder Nummer manuell eingeben.
         </p>
+
+        <div id="pantry-scan-match" hidden></div>
       </div>
       `}
 
@@ -2043,6 +2045,7 @@ function openItemModal(mode, item = null) {
       // Beim Bearbeiten übernimmt ein Scan nur die EAN - Name, Menge und
       // Einheit gehören dem vorhandenen Bestand (siehe lookupPantryBarcode).
       panel._pantryIsEdit = isEdit;
+      resetPantryScanMatch(panel);
 
       panel.querySelector('#pantry-quantity').value = isEdit ? String(item.quantity) : '1';
       panel.querySelector('#pantry-unit').value = isEdit ? item.unit : 'pcs';
@@ -2155,6 +2158,15 @@ function openItemModal(mode, item = null) {
       barcodeInput?.addEventListener('input', () => {
         panel._pantryBarcode =
           barcodeInput.value.trim();
+        // Andere Nummer → der Abgleich gehört nicht mehr dazu.
+        resetPantryScanMatch(panel);
+      });
+
+      panel.querySelector('#pantry-scan-match')?.addEventListener('click', (event) => {
+        const chip = event.target.closest('[data-replace-id]');
+        if (!chip) return;
+        togglePantryReplace(panel, Number(chip.dataset.replaceId));
+        renderPantryScanMatch(panel);
       });
 
       panel.querySelector('#pantry-barcode-lookup')?.addEventListener('click', async () => {
@@ -2731,6 +2743,8 @@ async function lookupPantryBarcode(panel, barcode) {
   // Nicht nur im DOM behalten:
   // manche Modal-/App-Zyklen setzen Inputwerte zurück.
   panel._pantryBarcode = cleanBarcode;
+  panel._pantryPack = null;
+  let foundName = '';
   if (lookupBtn) lookupBtn.disabled = true;
 
   if (status) {
@@ -2747,6 +2761,11 @@ async function lookupPantryBarcode(panel, barcode) {
     if (!product) {
       throw new Error('Keine Produktdaten erhalten.');
     }
+
+    foundName = product.name || '';
+    // Packungsgröße laut Produktdatenbank - wird mit einer bestätigten
+    // Zuordnung gemerkt (pantry_aliases.pack_quantity/pack_unit).
+    panel._pantryPack = { quantity: product.quantity, unit: product.unit };
 
     const nameInput =
       panel.querySelector('#pantry-name');
@@ -2807,6 +2826,110 @@ async function lookupPantryBarcode(panel, barcode) {
       lookupBtn.disabled = false;
     }
   }
+
+  if (panel._pantryIsEdit !== true) {
+    await refreshPantryScanMatch(panel, cleanBarcode, foundName);
+  }
+}
+
+// --------------------------------------------------------
+// Lokal: Scan-Zusammenführung (Server-Regeln in
+// server/services/pantry-scan-merge.js). Gleiche EAN → die Menge kommt beim
+// Speichern automatisch zur vorhandenen Zeile. Zeilen ohne EAN mit passendem
+// Namen (meist aus der Einkaufsliste) lassen sich per Tipp ersetzen; die Wahl
+// merkt sich der Server als Zuordnung und wählt sie beim nächsten Mal vor.
+// --------------------------------------------------------
+
+function resetPantryScanMatch(panel) {
+  panel._pantryMatch = null;
+  panel._pantryReplaceIds = new Set();
+  const box = panel.querySelector?.('#pantry-scan-match');
+  if (box) {
+    box.hidden = true;
+    box.textContent = '';
+  }
+}
+
+async function refreshPantryScanMatch(panel, barcode, productName) {
+  resetPantryScanMatch(panel);
+  let match;
+  try {
+    const query = new URLSearchParams({ barcode, name: productName || '' });
+    match = (await api.get(`/pantry/scan-match?${query}`)).data;
+  } catch {
+    // Ohne Abgleich speichert der Server trotzdem richtig (merge_existing).
+    return;
+  }
+  // Inzwischen eine andere Nummer eingegeben? Dann nichts anzeigen.
+  if (String(panel._pantryBarcode ?? '') !== barcode) return;
+
+  panel._pantryMatch = match;
+  panel._pantryReplaceIds = new Set(
+    (match?.placeholders ?? []).filter((p) => p.alias).map((p) => p.id)
+  );
+
+  // Produkt unbekannt, aber schon im Vorrat: Name und Einheit von dort.
+  const nameInput = panel.querySelector('#pantry-name');
+  if (match?.target && nameInput && !nameInput.value.trim()) {
+    nameInput.value = match.target.name;
+    const unitInput = panel.querySelector('#pantry-unit');
+    if (unitInput) unitInput.value = match.target.unit;
+  }
+
+  renderPantryScanMatch(panel);
+}
+
+function togglePantryReplace(panel, id) {
+  if (!panel._pantryReplaceIds) panel._pantryReplaceIds = new Set();
+  if (panel._pantryReplaceIds.has(id)) panel._pantryReplaceIds.delete(id);
+  else panel._pantryReplaceIds.add(id);
+}
+
+/** Text des Abgleichs als HTML (ohne DOM, damit testbar). */
+function pantryScanMatchHtml(match, replaceIds) {
+  const parts = [];
+  const target = match?.target;
+  if (target) {
+    const where = target.location_name ? `, ${target.location_name}` : '';
+    parts.push(`
+      <p class="form-hint" data-scan-merge>
+        <i data-lucide="package-plus" class="icon-sm" aria-hidden="true"></i>
+        Schon im Vorrat: <strong>${esc(target.name)}</strong> (${esc(quantityText(target))}${esc(where)}).
+        Beim Speichern kommt die Menge dort dazu, es entsteht keine neue Zeile.
+        Mit MHD wird es eine eigene Charge.
+      </p>`);
+  }
+  const placeholders = match?.placeholders ?? [];
+  if (placeholders.length) {
+    parts.push(`
+      <p class="form-hint" style="margin-bottom:.25rem">
+        Ersetzt das einen Eintrag ohne Barcode (z. B. aus der Einkaufsliste)?
+        Angetippte werden beim Speichern gelöscht und für das nächste Mal gemerkt.
+      </p>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        ${placeholders.map((p) => {
+          const on = replaceIds?.has(p.id) === true;
+          const where = p.location_name ? ` · ${p.location_name}` : '';
+          return `
+          <button type="button" class="filter-chip${on ? ' filter-chip--active' : ''}"
+                  data-replace-id="${Number(p.id)}" aria-pressed="${on}">
+            <i data-lucide="${on ? 'check' : 'replace'}" class="icon-sm" aria-hidden="true"></i>
+            <span>${esc(p.name)} (${esc(quantityText(p))}${esc(where)})${p.alias ? ' · gemerkt' : ''}</span>
+          </button>`;
+        }).join('')}
+      </div>`);
+  }
+  return parts.join('');
+}
+
+function renderPantryScanMatch(panel) {
+  const box = panel.querySelector('#pantry-scan-match');
+  if (!box) return;
+  const html = pantryScanMatchHtml(panel._pantryMatch, panel._pantryReplaceIds);
+  box.textContent = '';
+  if (html) box.insertAdjacentHTML('beforeend', html);
+  box.hidden = !html;
+  if (html && window.lucide) window.lucide.createIcons({ el: box });
 }
 
 
@@ -3096,11 +3219,23 @@ async function saveItem(panel, mode, item) {
       panel._pantryPhotoRemove === true,
   };
 
+  // Lokal: gleiche EAN aufstocken, gewählte Platzhalter ersetzen.
+  if (mode === 'create' && payload.barcode) {
+    payload.merge_existing = true;
+    payload.replace_ids = [...(panel._pantryReplaceIds ?? [])];
+    if (panel._pantryPack) payload.alias_pack = panel._pantryPack;
+  }
+
   saveBtn.disabled = true;
+  let mergedToast = null;
   try {
     if (mode === 'create') {
       const res = await api.post('/pantry', payload);
-      state.items.push(res.data);
+      if (res.merged_into) {
+        mergedToast = `Zu „${res.data.name}“ hinzugefügt, jetzt ${quantityText(res.data)}.`;
+      } else {
+        state.items.push(res.data);
+      }
     } else {
       const res = await api.put(`/pantry/${item.id}`, payload);
       const idx = state.items.findIndex((i) => i.id === item.id);
@@ -3113,7 +3248,7 @@ async function saveItem(panel, mode, item) {
     closeSharedModal({ force: true });
     renderFilters();
     renderList({ motion: true });
-    window.yuvomi?.showToast(mode === 'create' ? t('pantry.created') : t('pantry.updated'), 'success');
+    window.yuvomi?.showToast(mergedToast ?? (mode === 'create' ? t('pantry.created') : t('pantry.updated')), 'success');
   } catch (err) {
     saveBtn.disabled = false;
     window.yuvomi?.showToast(err.data?.error ?? t('common.errorGeneric'), 'danger');
@@ -3276,4 +3411,6 @@ export const __localTest = {
   normalizePantryTag,
   selectedFilterLocation,
   autoScanFor,
+  pantryScanMatchHtml,
+  togglePantryReplace,
 };

@@ -10738,8 +10738,32 @@ const LOCAL_COLUMNS = [
   { table: 'inventory_items', column: 'barcode', type: 'TEXT' },
 ];
 
+/**
+ * Tabellen der lokalen Erweiterungen, ebenfalls ohne Migrationsnummer und nur
+ * `CREATE ... IF NOT EXISTS`. Ältere Images lassen sie einfach liegen.
+ *
+ * pantry_aliases: bestätigte Zuordnung "Name aus der Einkaufsliste → EAN"
+ * (Vorrat-Scan "Ersetzt das …?"). Liest auch der Bring-Sync in LXC 104, damit
+ * z. B. "1x Rucola" die EAN-Zeile um eine Packung (pack_quantity/pack_unit)
+ * aufstockt statt einen Platzhalter anzulegen.
+ */
+const LOCAL_TABLES = [
+  `CREATE TABLE IF NOT EXISTS pantry_aliases (
+     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+     name          TEXT NOT NULL,
+     name_key      TEXT NOT NULL UNIQUE,
+     barcode       TEXT NOT NULL,
+     pack_quantity REAL,
+     pack_unit     TEXT,
+     created_by    INTEGER,
+     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+   )`,
+];
+
 const LOCAL_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_inventory_items_barcode ON inventory_items(barcode)
+     WHERE barcode IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_pantry_items_barcode ON pantry_items(barcode)
      WHERE barcode IS NOT NULL`,
 ];
 
@@ -10777,6 +10801,7 @@ function ensureLocalSchema(database = db) {
     database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     log.info(`Lokales Schema: ${table}.${column} angelegt.`);
   }
+  for (const sql of LOCAL_TABLES) database.exec(sql);
   for (const sql of LOCAL_INDEXES) database.exec(sql);
 }
 

@@ -25,6 +25,7 @@ import { syncPantryExpiryReminder, resolvePantryAccess } from '../services/pantr
 import { todayKey as householdToday } from '../utils/timezone.js';
 import { mayReadModule } from '../permissions.js';
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from '../utils/upload-limit.js';
+import { aliasKey, placeholderMatches, pickMergeTarget, mergedAmount } from '../services/pantry-scan-merge.js';
 
 const log = createLogger('Pantry');
 const router = express.Router();
@@ -576,6 +577,112 @@ router.get('/barcode/:barcode', async (req, res) => {
 });
 
 // --------------------------------------------------------
+// Lokale Erweiterung: Scan-Zusammenführung und Zuordnungen
+// (Regeln in server/services/pantry-scan-merge.js)
+// --------------------------------------------------------
+
+const MAX_PLACEHOLDERS = 6;
+
+function itemWithLocation(itemId) {
+  return db.get().prepare(`
+    SELECT pi.*, pl.name AS location_name, pl.icon AS location_icon
+    FROM pantry_items pi
+    LEFT JOIN pantry_locations pl ON pl.id = pi.location_id
+    WHERE pi.id = ?
+  `).get(itemId);
+}
+
+function rowsWithBarcode(barcode) {
+  return db.get().prepare('SELECT * FROM pantry_items WHERE barcode = ?').all(barcode);
+}
+
+// GET /api/v1/pantry/scan-match?barcode=…&name=…
+// Was passiert beim Speichern eines Scans? `target` = Zeile gleicher EAN, die
+// die Menge aufnimmt (null = neue Zeile), `placeholders` = Zeilen ohne EAN, die
+// der Scan ersetzen könnte (`alias` = schon einmal bestätigt).
+// Response: { data: { target, placeholders } }
+router.get('/scan-match', (req, res) => {
+  try {
+    const barcode = String(req.query.barcode ?? '').trim();
+    if (!/^\d{8,14}$/.test(barcode)) {
+      return res.status(400).json({ error: 'Ungültiger Barcode.', code: 400 });
+    }
+    const target = pickMergeTarget(rowsWithBarcode(barcode));
+    const name = String(req.query.name ?? '').trim() || target?.name || '';
+
+    const known = new Set(db.get()
+      .prepare('SELECT name_key FROM pantry_aliases WHERE barcode = ?')
+      .all(barcode)
+      .map((a) => a.name_key));
+
+    const placeholders = loadItems()
+      .filter((row) => !row.barcode)
+      .map((row) => ({ row, alias: known.has(aliasKey(row.name)) }))
+      .filter(({ row, alias }) => alias || (name && placeholderMatches(row.name, name)))
+      .sort((a, b) => Number(b.alias) - Number(a.alias)
+        || Number(Number(b.row.quantity) > 0) - Number(Number(a.row.quantity) > 0)
+        || a.row.id - b.row.id)
+      .slice(0, MAX_PLACEHOLDERS)
+      .map(({ row, alias }) => ({ ...itemOut(row), alias }));
+
+    res.json({
+      data: {
+        target: target ? itemOut(itemWithLocation(target.id)) : null,
+        placeholders,
+      },
+    });
+  } catch (err) {
+    log.error('GET /scan-match error:', err);
+    res.status(500).json({ error: 'Internal server error.', code: 500 });
+  }
+});
+
+// GET /api/v1/pantry/aliases
+// Response: { data: PantryAlias[] }
+router.get('/aliases', (_req, res) => {
+  try {
+    const rows = db.get().prepare('SELECT * FROM pantry_aliases ORDER BY name COLLATE NOCASE').all();
+    res.json({ data: rows });
+  } catch (err) {
+    log.error('GET /aliases error:', err);
+    res.status(500).json({ error: 'Internal server error.', code: 500 });
+  }
+});
+
+// DELETE /api/v1/pantry/aliases/:aliasId
+// Response: 204
+router.delete('/aliases/:aliasId', (req, res) => {
+  try {
+    const vId = idParam(req.params.aliasId, 'Zuordnungs-ID');
+    if (vId.error) return res.status(400).json({ error: vId.error, code: 400 });
+    const result = db.get().prepare('DELETE FROM pantry_aliases WHERE id = ?').run(vId.value);
+    if (!result.changes) return res.status(404).json({ error: 'Alias not found.', code: 404 });
+    res.status(204).end();
+  } catch (err) {
+    log.error('DELETE /aliases/:aliasId error:', err);
+    res.status(500).json({ error: 'Internal server error.', code: 500 });
+  }
+});
+
+/** `replace_ids` aus dem Request: Liste positiver Ganzzahlen. */
+function parseReplaceIds(raw) {
+  if (raw === undefined || raw === null) return { value: [] };
+  if (!Array.isArray(raw) || raw.length > MAX_PLACEHOLDERS) return { error: 'replace_ids muss eine kurze Liste sein.' };
+  const ids = raw.map(Number);
+  if (ids.some((n) => !Number.isInteger(n) || n <= 0)) return { error: 'replace_ids enthält ungültige IDs.' };
+  return { value: [...new Set(ids)] };
+}
+
+/** Packungsgröße für die Zuordnung: aus dem Scan, sonst die gespeicherte Menge. */
+function packFrom(raw, values) {
+  const q = Number(raw?.quantity);
+  if (raw && Number.isFinite(q) && q > 0) {
+    return { quantity: normalizePantryQuantity(q, { fallback: 1 }), unit: normalizePantryUnit(raw.unit) };
+  }
+  return { quantity: values.quantity, unit: values.unit };
+}
+
+// --------------------------------------------------------
 // GET /api/v1/pantry/locations
 // Alle Lagerorte in Sortierreihenfolge.
 // Response: { data: PantryLocation[] }
@@ -857,7 +964,9 @@ router.get('/', (_req, res) => {
 // --------------------------------------------------------
 // POST /api/v1/pantry
 // Body: { name, quantity?, unit?, location_id?, category?, expires_on?, min_quantity?, notes? }
-// Response: { data: PantryItem }
+//   lokal zusätzlich: barcode?, tags?, photo_data?, merge_existing?, replace_ids?, alias_pack?
+// Response: { data: PantryItem, replaced_ids } - 201 neu angelegt,
+//   200 + merged_into = Menge zu einer Zeile gleicher EAN addiert
 // --------------------------------------------------------
 router.post('/', async (req, res) => {
   let newPhoto = null;
@@ -901,10 +1010,76 @@ router.post('/', async (req, res) => {
         );
     }
 
+    // Lokal: `replace_ids` = Platzhalter ohne EAN, die dieser Scan ersetzt
+    // (werden gelöscht, ihr Name als Zuordnung zur EAN gemerkt);
+    // `merge_existing` = bei gleicher EAN die vorhandene Zeile aufstocken statt
+    // eine neue anzulegen. Ein MHD macht den Scan zur eigenen Charge.
+    const vReplace = parseReplaceIds(req.body.replace_ids);
+    if (vReplace.error) return res.status(400).json({ error: vReplace.error, code: 400 });
+    const mergeWanted = req.body.merge_existing === true && Boolean(barcodeValue) && !values.expires_on;
+    const userId = req.authUserId || req.session.userId;
+    const removedPhotos = [];
+    let photoUnused = false;
+
     // Schreiben und Erinnerung in EINER Transaktion, wie in
     // server/routes/inventory/items.js: sonst kann der Artikel stehen und die
     // Erinnerung fehlen, ohne dass die Antwort davon erzählt.
-    const created = db.get().transaction(() => {
+    const outcome = db.get().transaction(() => {
+      const replaced = [];
+      if (barcodeValue && vReplace.value.length) {
+        const pack = packFrom(req.body.alias_pack, values);
+        const upsert = db.get().prepare(`
+          INSERT INTO pantry_aliases (name, name_key, barcode, pack_quantity, pack_unit, created_by)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(name_key) DO UPDATE SET
+            name = excluded.name, barcode = excluded.barcode,
+            pack_quantity = excluded.pack_quantity, pack_unit = excluded.pack_unit
+        `);
+        for (const placeholderId of vReplace.value) {
+          const placeholder = getItem(placeholderId);
+          // Nur echte Platzhalter: eine Zeile mit EAN ersetzt kein Scan.
+          if (!placeholder || placeholder.barcode) continue;
+          const key = aliasKey(placeholder.name);
+          if (!key) continue;
+          db.get().prepare('DELETE FROM pantry_items WHERE id = ?').run(placeholderId);
+          db.get().prepare("DELETE FROM reminders WHERE entity_type = 'pantry_item' AND entity_id = ?").run(placeholderId);
+          if (placeholder.photo_key) removedPhotos.push(placeholder.photo_key);
+          upsert.run(placeholder.name, key, barcodeValue, pack.quantity, pack.unit, userId);
+          replaced.push(placeholderId);
+        }
+      }
+
+      if (mergeWanted) {
+        const target = pickMergeTarget(rowsWithBarcode(barcodeValue));
+        const amount = target ? mergedAmount(target, values.quantity, values.unit) : null;
+        if (amount) {
+          const set = {
+            quantity: normalizePantryQuantity(amount.quantity, { fallback: values.quantity }),
+            unit: amount.unit,
+          };
+          // Eine leere Zeile "zieht um" dorthin, wo der neue Bestand liegt.
+          if (!(Number(target.quantity) > 0) && values.location_id !== null) set.location_id = values.location_id;
+          // Gepflegtes der Zielzeile gewinnt; nur Lücken werden gefüllt.
+          if (target.min_quantity === null && values.min_quantity !== null) set.min_quantity = values.min_quantity;
+          if (!String(target.notes ?? '').trim() && values.notes) set.notes = values.notes;
+          if (!target.tags && values.tags) set.tags = values.tags;
+          if (newPhoto && !target.photo_key) {
+            set.photo_key = newPhoto.key;
+            set.photo_mime = newPhoto.mime;
+            set.photo_size = newPhoto.size;
+          } else if (newPhoto) {
+            photoUnused = true;
+          }
+          const fields = Object.keys(set);
+          db.get().prepare(`
+            UPDATE pantry_items SET ${fields.map((f) => `${f} = ?`).join(', ')} WHERE id = ?
+          `).run(...fields.map((f) => set[f]), target.id);
+          const fresh = getItem(target.id);
+          syncReminder(fresh);
+          return { item: fresh, mergedInto: target.id, replaced };
+        }
+      }
+
       const result = db.get().prepare(`
         INSERT INTO pantry_items
           (
@@ -934,7 +1109,7 @@ router.post('/', async (req, res) => {
         values.min_quantity,
         values.notes,
         barcodeValue,
-        req.authUserId || req.session.userId,
+        userId,
         newPhoto?.key ?? null,
         newPhoto?.mime ?? null,
         newPhoto?.size ?? null,
@@ -942,10 +1117,20 @@ router.post('/', async (req, res) => {
       );
       const item = getItem(result.lastInsertRowid);
       syncReminder(item);
-      return item;
+      return { item, mergedInto: null, replaced };
     })();
 
-    res.status(201).json({ data: itemOut(created) });
+    for (const key of removedPhotos) await removePantryPhoto(key);
+    if (photoUnused) await removePantryPhoto(newPhoto.key);
+
+    if (outcome.mergedInto) {
+      return res.json({
+        data: itemOut(outcome.item),
+        merged_into: outcome.mergedInto,
+        replaced_ids: outcome.replaced,
+      });
+    }
+    res.status(201).json({ data: itemOut(outcome.item), replaced_ids: outcome.replaced });
   } catch (err) {
     if (newPhoto?.key) {
       await removePantryPhoto(
