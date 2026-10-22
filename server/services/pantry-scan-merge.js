@@ -28,14 +28,15 @@ export function aliasKey(name) {
 
 /**
  * Steckt der Name einer Einkaufslisten-Zeile im Produktnamen? Jedes Wort ab drei
- * Buchstaben muss vorkommen - als ganzes Wort oder, ab fünf Buchstaben, als Teil
- * eines zusammengesetzten Wortes ("tomaten" in "rispentomaten").
+ * Buchstaben muss vorkommen - als ganzes Wort oder, ab fünf Buchstaben, als
+ * Grundwort am Ende eines zusammengesetzten Wortes ("tomaten" in
+ * "rispentomaten", aber nicht "fisch" in "thunfischfilets").
  */
 export function placeholderMatches(placeholderName, productName) {
   const wanted = nameWords(placeholderName).filter((w) => w.length >= 3 && !/^\d+$/.test(w));
   if (!wanted.length) return false;
   const have = nameWords(productName);
-  return wanted.every((w) => have.some((h) => h === w || (w.length >= 5 && h.includes(w))));
+  return wanted.every((w) => have.some((h) => h === w || (w.length >= 5 && h.endsWith(w))));
 }
 
 const FACTORS = new Map([

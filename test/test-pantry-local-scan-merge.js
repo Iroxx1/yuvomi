@@ -70,6 +70,9 @@ test('placeholderMatches: Wort im Produktnamen, Teilwort erst ab fünf Buchstabe
   assert.equal(merge.placeholderMatches('Rucola', 'LIDL Priméale Rucola 125g 0.99€ 1kg 7.92€'), true);
   assert.equal(merge.placeholderMatches('Wiener', 'Wiener Würstchen'), true);
   assert.equal(merge.placeholderMatches('Tomaten', 'Cocktail-Rispentomaten'), true);
+  assert.equal(merge.placeholderMatches('Spinat TK', 'Rahmspinat'), true);
+  assert.equal(merge.placeholderMatches('Fisch TK', 'Thunfischfilets in eigenen Saft'), false);
+  assert.equal(merge.placeholderMatches('Kuchen', 'Lebkuchenherzen'), false);
   assert.equal(merge.placeholderMatches('Salz', 'Salzstangen'), false);
   assert.equal(merge.placeholderMatches('Putenbrust mit Honig', 'Putenbrust mit Honig, hauchfein'), true);
   assert.equal(merge.placeholderMatches('Äpfel', 'Apfel'), false);
